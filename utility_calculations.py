@@ -1,26 +1,20 @@
-import numpy as np
-from scipy.spatial import distance_matrix
+import os
 import pandas as pd
+import numpy as np
+import torch
+import streamlit as st
+from sklearn.preprocessing import StandardScaler
+from scipy.spatial import distance_matrix
+import plotly.express as px
+import torch.optim as optim  # Import PyTorch's optimizer module
+from skopt import gp_minimize
+from skopt.space import Real
+import json
+import plotly.graph_objects as go
 
 
+# Utility function
 def calculate_utility(predictions, uncertainties, apriori, curiosity, weights, max_or_min, thresholds=None):
-    """
-    Calculate the utility scores for a given set of predictions, uncertainties, and optional a priori constraints.
-
-    Args:
-        predictions (np.ndarray): Predicted values for target properties (num_samples x num_targets).
-        uncertainties (np.ndarray): Uncertainty estimates for predictions (num_samples x num_targets).
-        apriori (np.ndarray): A priori property constraints (num_samples x num_constraints), optional.
-        curiosity (float): A coefficient balancing exploration (uncertainty) and exploitation (predictions).
-        weights (list): Weight factors for each target or constraint.
-        max_or_min (list): List of optimization goals ("max" or "min") for each property/constraint.
-        thresholds (list): Optional thresholds for constraints (list of floats or None).
-
-    Returns:
-        np.ndarray: Utility scores for each sample.
-    """
-    if predictions.shape != uncertainties.shape:
-        raise ValueError("Predictions and uncertainties must have the same shape.")
     predictions = np.array(predictions)
     uncertainties = np.array(uncertainties)
     weights = np.array(weights).reshape(1, -1)
@@ -44,7 +38,7 @@ def calculate_utility(predictions, uncertainties, apriori, curiosity, weights, m
     normalized_uncertainties = uncertainties / uncertainty_std
     weighted_uncertainties = normalized_uncertainties * weights[:, :uncertainties.shape[1]]
 
-    # Handle a priori constraints
+    # Handle apriori constraints
     if apriori is not None and apriori.shape[1] > 0:
         apriori = np.array(apriori)
         apriori_std = apriori.std(axis=0, keepdims=True).clip(min=1e-6)
@@ -59,7 +53,7 @@ def calculate_utility(predictions, uncertainties, apriori, curiosity, weights, m
         if thresholds is not None:
             thresholds = np.array(thresholds).reshape(1, -1)
             for i, (thresh, mode) in enumerate(zip(thresholds[0], max_or_min)):
-                if i < apriori.shape[1] and thresh is not None:  # Ensure index validity
+                if i < apriori.shape[1] and thresh is not None:  # Ensure index is valid
                     if mode == "min":
                         normalized_apriori[:, i] = np.where(
                             apriori[:, i] > thresh, 0, normalized_apriori[:, i]
@@ -83,36 +77,13 @@ def calculate_utility(predictions, uncertainties, apriori, curiosity, weights, m
     return utility
 
 
-from scipy.spatial import distance_matrix
-import numpy as np
 
-
-
+# Novelty calculation
 def calculate_novelty(features, labeled_features):
-    """
-    Calculate novelty scores based on distances to labeled features.
-
-    Args:
-        features (np.ndarray): Feature matrix for unlabeled data (num_samples x num_features).
-        labeled_features (np.ndarray): Feature matrix for labeled data (num_labeled_samples x num_features).
-
-    Returns:
-        np.ndarray: Novelty scores for each sample.
-    """
     if labeled_features.shape[0] == 0:
-        # Return zeros if there are no labeled features
         return np.zeros(features.shape[0])
-
-    # Compute the distance matrix between features and labeled_features
     distances = distance_matrix(features, labeled_features)
-
-    # Compute minimum distances for each feature
     min_distances = distances.min(axis=1)
-
-    # Normalize novelty scores by dividing by the maximum distance
     max_distance = min_distances.max()
-    novelty_scores = min_distances / (max_distance + 1e-6)
-
-    return novelty_scores
-
-
+    novelty = min_distances / (max_distance + 1e-6)
+    return novelty

@@ -1,5 +1,5 @@
 # Ignore the virtual environment directory
-maml/
+maml2/
 
 # Ignore Python compiled files
 *.pyc

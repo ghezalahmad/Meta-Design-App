@@ -1,21 +1,22 @@
-import torch
-import torch.optim as optim
+# Define MAML model
+
+import os
 import pandas as pd
+import numpy as np
+import torch
+import streamlit as st
+from sklearn.preprocessing import StandardScaler
+from scipy.spatial import distance_matrix
+import plotly.express as px
+import torch.optim as optim  # Import PyTorch's optimizer module
+from skopt import gp_minimize
+from skopt.space import Real
+import json
+import plotly.graph_objects as go
 
 
 class MAMLModel(torch.nn.Module):
-    """
-    Model-Agnostic Meta-Learning (MAML) model definition with customizable network architecture.
-    """
     def __init__(self, input_size, output_size, hidden_size=128):
-        """
-        Initializes the MAMLModel.
-
-        Args:
-            input_size (int): Number of input features.
-            output_size (int): Number of output features (target properties).
-            hidden_size (int): Number of neurons in the hidden layers.
-        """
         super(MAMLModel, self).__init__()
         self.network = torch.nn.Sequential(
             torch.nn.Linear(input_size, hidden_size),
@@ -26,19 +27,9 @@ class MAMLModel(torch.nn.Module):
         )
 
     def forward(self, x):
-        """
-        Forward pass for the model.
-
-        Args:
-            x (torch.Tensor): Input tensor.
-
-        Returns:
-            torch.Tensor: Output predictions.
-        """
         return self.network(x)
-
-
-def meta_train(meta_model, data, input_columns, target_columns, epochs, inner_lr, outer_lr, num_tasks=5):
+    
+def meta_train(meta_model, data, input_columns, target_columns, hidden_size, epochs, inner_lr, outer_lr, num_tasks=5):
     """
     Meta-train the MAML model using simulated tasks.
 
@@ -73,7 +64,7 @@ def meta_train(meta_model, data, input_columns, target_columns, epochs, inner_lr
             support_targets, query_targets = targets[:num_support], targets[num_support:]
 
             # Inner loop: Task-specific adaptation
-            task_model = MAMLModel(len(input_columns), len(target_columns), hidden_size=meta_model.network[0].out_features)
+            task_model = MAMLModel(len(input_columns), len(target_columns), hidden_size=hidden_size)
             task_model.load_state_dict(meta_model.state_dict())  # Clone the meta-model
             task_optimizer = optim.SGD(task_model.parameters(), lr=inner_lr)
 
