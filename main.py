@@ -11,6 +11,7 @@ from skopt import gp_minimize
 from skopt.space import Real
 import json
 import plotly.graph_objects as go
+from sklearn.manifold import TSNE
 
 
 from train_and_infer import meta_train
@@ -260,8 +261,32 @@ if uploaded_file:
 
     st.write(f"Debug: Hidden Size is {hidden_size}")
 
+
+
+    # Initialize session state for result_df and experiment flags
+    if "result_df" not in st.session_state:
+        st.session_state.result_df = pd.DataFrame()
+
+    if "experiment_run" not in st.session_state:
+        st.session_state.experiment_run = False
+
+    if "tsne_generated" not in st.session_state:
+        st.session_state.tsne_generated = False
+
+    if "dropdown_option" not in st.session_state:
+        st.session_state.dropdown_option = "None"
+
+    # Dropdown menu for additional functionalities (always available)
+    st.session_state.dropdown_option = st.selectbox(
+        "Select an Analysis Option:",
+        ["None", "Generate t-SNE Plot", "Radar Chart"],
+        key="dropdown_menu",
+    )
+
     # Experiment execution
-    if st.button("Run Experiment"):
+    if st.button("Run Experiment", key="run_experiment"):
+        st.session_state.experiment_run = True
+        st.session_state.tsne_generated = False  # Reset t-SNE flag
         if not input_columns or not target_columns:
             st.error("Please select at least one input feature and one target property.")
         else:
@@ -295,6 +320,12 @@ if uploaded_file:
                     apriori_infer_scaled = scaler_apriori.transform(apriori_data.loc[~known_targets])
                 else:
                     apriori_infer_scaled = np.zeros((inputs_infer.shape[0], 1))  # Default to zeros if no a priori data
+
+                # Ensure default values for weights, max_or_min, and thresholds for a priori columns if empty
+                weights_apriori = weights_apriori if len(apriori_columns) > 0 else []
+                max_or_min_apriori = max_or_min_apriori if len(apriori_columns) > 0 else []
+                thresholds_apriori = thresholds_apriori if len(apriori_columns) > 0 else []
+
 
                 # Meta-learning predictions and training
                 meta_model = MAMLModel(len(input_columns), len(target_columns), hidden_size=hidden_size)
@@ -410,21 +441,69 @@ if uploaded_file:
                 if apriori_infer_scaled.ndim == 1:
                     apriori_infer_scaled = apriori_infer_scaled.reshape(-1, 1)
 
+
+                # Validate and align inputs for utility calculation
+                weights_combined = weights_targets + (weights_apriori if len(apriori_columns) > 0 else [])
+                max_or_min_combined = max_or_min_targets + (max_or_min_apriori if len(apriori_columns) > 0 else [])
+                thresholds_combined = thresholds_targets + (thresholds_apriori if len(apriori_columns) > 0 else [])
+
+               
+
+                # Ensure predictions align with the number of targets
+                if predictions.shape[1] != len(target_columns):
+                    raise ValueError(f"Predictions shape {predictions.shape} does not match the number of target columns {len(target_columns)}.")
+
+                # Ensure a priori columns align
+                if len(apriori_columns) > 0 and apriori_infer_scaled.shape[1] != len(apriori_columns):
+                    raise ValueError(f"A priori scaled data shape {apriori_infer_scaled.shape} does not match the number of a priori columns {len(apriori_columns)}.")
+
+                # Ensure weights, max_or_min, and thresholds align
+                if len(weights_combined) != len(target_columns) + len(apriori_columns):
+                    raise ValueError(f"Combined weights length {len(weights_combined)} does not match target + a priori columns {len(target_columns) + len(apriori_columns)}.")
+                if len(max_or_min_combined) != len(target_columns) + len(apriori_columns):
+                    raise ValueError(f"Combined max_or_min length {len(max_or_min_combined)} does not match target + a priori columns {len(target_columns) + len(apriori_columns)}.")
+                if len(thresholds_combined) != len(target_columns) + len(apriori_columns):
+                    raise ValueError(f"Combined thresholds length {len(thresholds_combined)} does not match target + a priori columns {len(target_columns) + len(apriori_columns)}.")
+
+                
+                # Combine predictions and a priori data into a single array for utility calculation
+                if apriori_infer_scaled is not None and apriori_infer_scaled.shape[1] > 0:
+                    combined_data = np.hstack([predictions, apriori_infer_scaled])
+                else:
+                    combined_data = predictions
+
+
+                # Ensure combined_data aligns with weights, max_or_min, and thresholds
+                if combined_data.shape[1] != len(weights_combined):
+                    raise ValueError(
+                        f"Combined data shape {combined_data.shape[1]} does not match the length of weights_combined {len(weights_combined)}."
+                    )
+
+                # Calculate utility scores
                 utility_scores = calculate_utility(
-                    predictions,
-                    uncertainty_scores,
-                    apriori_infer_scaled,
-                    curiosity=curiosity,
-                    weights=weights_targets + (weights_apriori if len(apriori_columns) > 0 else []),  # Combine weights
-                    max_or_min=max_or_min_targets + (max_or_min_apriori if len(apriori_columns) > 0 else []),  # Combine min/max
-                    thresholds=thresholds_targets + (thresholds_apriori if len(apriori_columns) > 0 else []),  # Combine thresholds
+                    predictions=predictions,               # Pass predictions
+                    uncertainties=uncertainty_scores,      # Uncertainty scores
+                    apriori=apriori_infer_scaled if len(apriori_columns) > 0 else None,  # Explicitly pass apriori if present
+                    curiosity=curiosity,                   # Curiosity factor
+                    weights=weights_combined,              # Combined weights
+                    max_or_min=max_or_min_combined,        # Combined optimization directions
+                    thresholds=thresholds_combined         # Combined thresholds
                 )
+
+
+
+
+
 
 
                 # Ensure all arrays are of the same length
                 num_samples = len(inputs_infer)
                 idx_samples = idx_samples[:num_samples]  # Adjust length if necessary
                 predictions = predictions[:num_samples]
+                # Ensure predictions match the number of target columns
+                if predictions.shape[1] != len(target_columns):
+                    raise ValueError("Predictions shape does not match the number of target columns.")
+
                 utility_scores = utility_scores[:num_samples]
                 novelty_scores = novelty_scores[:num_samples]
                 uncertainty_scores = uncertainty_scores[:num_samples]
@@ -439,32 +518,74 @@ if uploaded_file:
                     **{col: predictions[:, i] for i, col in enumerate(target_columns)},
                     **inputs_infer.reset_index(drop=True).to_dict(orient="list"),
                 }).sort_values(by="Utility", ascending=False).reset_index(drop=True)
-
-                # After training or inference
-                if uploaded_file and "result_df" in globals() and not result_df.empty:
-                    st.header("Generate t-SNE Plot")
-                    if st.button("Generate t-SNE Plot"):
-                        try:
-                            # Validate the required columns
-                            if "Utility" not in result_df.columns or len(input_columns) == 0:
-                                st.error("Please ensure the dataset has utility scores and input features.")
-                            else:
-                                # Generate the t-SNE plot
-                                tsne_plot = create_tsne_plot(
-                                    data=result_df,
-                                    features=input_columns,
-                                    utility_col="Utility",
-                                )
-                                st.plotly_chart(tsne_plot)
-                        except Exception as e:
-                            st.error(f"An error occurred while generating the t-SNE plot: {str(e)}")
-
+                st.session_state.result_df = result_df
+                st.success("Experiment completed successfully!")
+            except Exception as e:
+                st.error(f"An error occurred during the experiment: {str(e)}")
 
                 
+
                 
-                # Display results
+            # Display Results Table and Scatter Plot
+            if "result_df" in locals() and not result_df.empty:
                 st.write("### Results Table")
                 st.dataframe(result_df, use_container_width=True)
+
+                # Scatter Plot
+                if len(target_columns) > 1:
+                    scatter_fig = plot_scatter_matrix(result_df, target_columns, utility_scores)
+                    st.write("### Utility in Output Space (Scatter Matrix)")
+                    st.plotly_chart(scatter_fig)
+                else:
+                    st.write("### Utility vs Target Property")
+                    single_scatter_fig = px.scatter(
+                        result_df,
+                        x=target_columns[0],
+                        y="Utility",
+                        title=f"Utility vs {target_columns[0]}",
+                        labels={target_columns[0]: target_columns[0], "Utility": "Utility"},
+                        color="Utility",
+                        color_continuous_scale="Viridis",
+                    )
+                    st.plotly_chart(single_scatter_fig)
+
+                # Generate t-SNE Plot
+                # Handle Dropdown Selection
+            if st.session_state.dropdown_option == "Generate t-SNE Plot" and not st.session_state.result_df.empty:
+                with st.spinner("Generating t-SNE plot..."):
+                    try:
+                        tsne_plot = create_tsne_plot(
+                            data=st.session_state.result_df,
+                            features=input_columns,  # Ensure this matches valid columns
+                            utility_col="Utility",
+                        )
+                        st.plotly_chart(tsne_plot)
+                        st.session_state.tsne_generated = True
+                    except Exception as e:
+                        st.error(f"An error occurred while generating the t-SNE plot: {str(e)}")
+
+
+            # Radar Chart
+            if not st.session_state.result_df.empty:
+                st.write("### Radar Chart: Performance Overview")
+
+                # Ensure required columns exist
+                if all(col in st.session_state.result_df.columns for col in target_columns + ["Utility", "Novelty", "Uncertainty"]):
+                    # Define categories and values
+                    categories = target_columns + ["Utility", "Novelty", "Uncertainty"]
+                    values = [st.session_state.result_df[col].mean() for col in categories]
+
+                    # Create radar chart
+                    radar_fig = go.Figure()
+                    radar_fig.add_trace(go.Scatterpolar(r=values, theta=categories, fill='toself', name='Metrics'))
+                    radar_fig.update_layout(polar=dict(radialaxis=dict(visible=True)), showlegend=False)
+                    st.plotly_chart(radar_fig)
+                else:
+                    missing_cols = [col for col in target_columns + ["Utility", "Novelty", "Uncertainty"] if col not in st.session_state.result_df.columns]
+                    st.error(f"Radar chart cannot be generated. Missing columns: {', '.join(missing_cols)}")
+
+
+               
 
                 # Add a download button for predictions
                 st.write("### Download Predictions")
@@ -475,34 +596,6 @@ if uploaded_file:
                     file_name="predictions.csv",
                     mime="text/csv",
                 )
-
-                # Scatter plot
-                if len(target_columns) > 1:
-                    scatter_fig = plot_scatter_matrix(result_df, target_columns, utility_scores)
-                    st.write("### Utility in Output Space (Scatter Matrix)")
-                    st.plotly_chart(scatter_fig)
-                else:
-                    st.write("### Utility vs Target Property")
-                    single_scatter_fig = px.scatter(
-                        result_df,
-                        x=target_columns[0],  # Single target column
-                        y="Utility",          # Utility score
-                        title=f"Utility vs {target_columns[0]}",
-                        labels={target_columns[0]: target_columns[0], "Utility": "Utility"},
-                        color="Utility",
-                        color_continuous_scale="Viridis"
-                    )
-                    st.plotly_chart(single_scatter_fig)
-                # Radar Chart
-                st.write("### Radar Chart: Performance Overview")
-                categories = target_columns + ["Utility", "Novelty", "Uncertainty"]
-                values = [predictions[:, i].mean() for i in range(len(target_columns))] + [
-                    utility_scores.mean(), novelty_scores.mean(), uncertainty_scores.mean()
-                ]
-                radar_fig = go.Figure()
-                radar_fig.add_trace(go.Scatterpolar(r=values, theta=categories, fill='toself', name='Metrics'))
-                radar_fig.update_layout(polar=dict(radialaxis=dict(visible=True)), showlegend=False)
-                st.plotly_chart(radar_fig)
 
                  # Export Session Data
                 session_data = {
@@ -523,9 +616,6 @@ if uploaded_file:
                     data=session_json,
                     file_name="session.json",
                     mime="application/json"
-                )
-
-            except Exception as e:
-                st.error(f"An error occurred: {str(e)}")
+                ) 
 
 

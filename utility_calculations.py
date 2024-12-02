@@ -26,7 +26,7 @@ def calculate_utility(predictions, uncertainties, apriori, curiosity, weights, m
     normalized_predictions = (predictions - prediction_mean) / prediction_std
 
     # Adjust for min/max optimization
-    for i, mode in enumerate(max_or_min):
+    for i, mode in enumerate(max_or_min[:predictions.shape[1]]):
         if mode == "min":
             normalized_predictions[:, i] *= -1
 
@@ -39,21 +39,27 @@ def calculate_utility(predictions, uncertainties, apriori, curiosity, weights, m
     weighted_uncertainties = normalized_uncertainties * weights[:, :uncertainties.shape[1]]
 
     # Handle apriori constraints
+    apriori_utility = np.zeros(predictions.shape[0])  # Default to zeros
     if apriori is not None and apriori.shape[1] > 0:
         apriori = np.array(apriori)
         apriori_std = apriori.std(axis=0, keepdims=True).clip(min=1e-6)
         apriori_mean = apriori.mean(axis=0, keepdims=True)
         normalized_apriori = (apriori - apriori_mean) / apriori_std
 
-        # Align apriori dimensions with predictions
-        if apriori.shape[1] != predictions.shape[1]:
-            apriori = np.resize(apriori, (apriori.shape[0], predictions.shape[1]))
+        # Validate apriori dimensions
+        if apriori.shape[1] != weights.shape[1] - predictions.shape[1]:
+            raise ValueError(
+                f"A priori dimensions {apriori.shape[1]} do not match expected columns "
+                f"{weights.shape[1] - predictions.shape[1]}."
+            )
 
         # Apply thresholds
         if thresholds is not None:
             thresholds = np.array(thresholds).reshape(1, -1)
-            for i, (thresh, mode) in enumerate(zip(thresholds[0], max_or_min)):
-                if i < apriori.shape[1] and thresh is not None:  # Ensure index is valid
+            for i in range(min(len(thresholds[0]), apriori.shape[1])):
+                thresh = thresholds[0][i]
+                mode = max_or_min[predictions.shape[1] + i]  # Offset for a priori indices
+                if thresh is not None:
                     if mode == "min":
                         normalized_apriori[:, i] = np.where(
                             apriori[:, i] > thresh, 0, normalized_apriori[:, i]
@@ -63,10 +69,8 @@ def calculate_utility(predictions, uncertainties, apriori, curiosity, weights, m
                             apriori[:, i] < thresh, 0, normalized_apriori[:, i]
                         )
 
-        weighted_apriori = normalized_apriori * weights[:, :apriori.shape[1]]
+        weighted_apriori = normalized_apriori * weights[:, predictions.shape[1]:]
         apriori_utility = weighted_apriori.sum(axis=1)
-    else:
-        apriori_utility = np.zeros(predictions.shape[0])
 
     # Combine all utility components
     utility = (
@@ -75,6 +79,7 @@ def calculate_utility(predictions, uncertainties, apriori, curiosity, weights, m
         + apriori_utility
     )
     return utility
+
 
 
 
