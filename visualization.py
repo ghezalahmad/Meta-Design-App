@@ -12,6 +12,7 @@ from skopt import gp_minimize
 from skopt.space import Real
 import json
 import plotly.graph_objects as go
+from sklearn.manifold import TSNE
 
 
 # Scatter plot
@@ -33,20 +34,10 @@ def plot_scatter_matrix(result_df, target_columns, utility_scores):
 
 
 def create_tsne_plot(data, features, utility_col="Utility", perplexity=20, learning_rate=200):
-    """
-    Create a t-SNE plot for the dataset.
+    #st.write("Debug: Entered create_tsne_plot")
+    #st.write(f"Features passed: {features}")
+    #st.write(f"Data shape: {data.shape}")
 
-    Args:
-        data (pd.DataFrame): The dataset with features and utility.
-        features (list): The list of feature column names.
-        utility_col (str): Column name representing utility scores.
-        perplexity (int): Perplexity parameter for t-SNE.
-        learning_rate (int): Learning rate for t-SNE optimization.
-
-    Returns:
-        plotly.graph_objects.Figure: A scatter plot in t-SNE space.
-    """
-    # Validate input data
     if len(features) == 0:
         raise ValueError("No features selected for t-SNE.")
 
@@ -62,17 +53,15 @@ def create_tsne_plot(data, features, utility_col="Utility", perplexity=20, learn
         learning_rate=learning_rate,
     )
 
-    # Fit t-SNE on the selected feature columns
     tsne_result = tsne.fit_transform(data[features])
 
-    # Create a dataframe with t-SNE results
+    st.write("Debug: t-SNE computation complete")
     tsne_result_df = pd.DataFrame({
         "t-SNE-1": tsne_result[:, 0],
         "t-SNE-2": tsne_result[:, 1],
         utility_col: data[utility_col].values,
     })
 
-    # Generate scatter plot
     fig = px.scatter(
         tsne_result_df,
         x="t-SNE-1",
@@ -82,7 +71,8 @@ def create_tsne_plot(data, features, utility_col="Utility", perplexity=20, learn
         labels={"t-SNE-1": "t-SNE Dimension 1", "t-SNE-2": "t-SNE Dimension 2"},
         color_continuous_scale="Viridis",
     )
-
     fig.update_traces(marker=dict(size=7))
     fig.update_layout(height=800, legend_title_text="Utility")
+
+    st.write("Debug: Returning t-SNE plot")
     return fig
