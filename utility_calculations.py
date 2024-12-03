@@ -95,3 +95,22 @@ def calculate_novelty(features, labeled_features):
     max_distance = min_distances.max()
     novelty = min_distances / (max_distance + 1e-6)
     return novelty
+
+def calculate_uncertainty(meta_model, inputs_tensor, num_perturbations=20):
+    noise_scale = 0.1
+    perturbed_predictions = []
+    for _ in range(num_perturbations):
+        perturbed_input = inputs_tensor + torch.normal(0, noise_scale, size=inputs_tensor.shape)
+        perturbed_prediction = meta_model(perturbed_input).detach().numpy()
+        perturbed_predictions.append(perturbed_prediction)
+    perturbed_predictions = np.stack(perturbed_predictions, axis=0)
+    return perturbed_predictions.std(axis=0).mean(axis=1, keepdims=True)
+
+def prepare_results_dataframe(predictions, inputs_infer, novelty_scores, uncertainty_scores, target_columns):
+    result_df = pd.DataFrame({
+        **{col: predictions[:, i] for i, col in enumerate(target_columns)},
+        **inputs_infer.reset_index(drop=True).to_dict(orient="list"),
+        "Novelty": novelty_scores,
+        "Uncertainty": uncertainty_scores.flatten(),
+    }).sort_values(by="Novelty", ascending=False).reset_index(drop=True)
+    return result_df
