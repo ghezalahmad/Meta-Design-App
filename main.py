@@ -226,6 +226,7 @@ if uploaded_file:
         options=remaining_columns_aprior,
         default=apriori_columns  # Initialized as empty list above
     )
+    st.write(f"Selected a priori columns: {apriori_columns}")
 
 
 
@@ -259,7 +260,7 @@ if uploaded_file:
             weights_apriori.append(weight)
             thresholds_apriori.append(float(threshold) if threshold else None)
 
-    st.write(f"Debug: Hidden Size is {hidden_size}")
+   
 
 
 
@@ -320,6 +321,8 @@ if uploaded_file:
                     apriori_infer_scaled = scaler_apriori.transform(apriori_data.loc[~known_targets])
                 else:
                     apriori_infer_scaled = np.zeros((inputs_infer.shape[0], 1))  # Default to zeros if no a priori data
+                
+
 
                 # Ensure default values for weights, max_or_min, and thresholds for a priori columns if empty
                 weights_apriori = weights_apriori if len(apriori_columns) > 0 else []
@@ -431,65 +434,89 @@ if uploaded_file:
                     # For multiple target properties, compute uncertainty for each row
                     uncertainty_scores = np.std(predictions_scaled, axis=1, keepdims=True)
 
-
-
-
                 # Novelty calculation
                 novelty_scores = calculate_novelty(inputs_infer_scaled, inputs_train_scaled)
 
-                # Utility calculation
-                if apriori_infer_scaled.ndim == 1:
-                    apriori_infer_scaled = apriori_infer_scaled.reshape(-1, 1)
+                # Ensure apriori_infer_scaled is in the correct shape if a priori columns are selected
+                if len(apriori_columns) > 0:
+                    if apriori_infer_scaled is not None:
+                        # Reshape to 2D if needed
+                        if apriori_infer_scaled.ndim == 1:
+                            apriori_infer_scaled = apriori_infer_scaled.reshape(-1, 1)
+                        
+                        # Validate alignment with the number of a priori columns
+                        if apriori_infer_scaled.shape[1] != len(apriori_columns):
+                            raise ValueError(
+                                f"A priori data has incorrect shape {apriori_infer_scaled.shape}. "
+                                f"Expected columns: {len(apriori_columns)}."
+                            )
+                    else:
+                        raise ValueError(
+                            "A priori data is missing, but a priori columns were selected."
+                        )
+                else:
+                    # No a priori columns selected; ensure apriori_infer_scaled is an empty array
+                    apriori_infer_scaled = np.empty((predictions.shape[0], 0))
 
 
                 # Validate and align inputs for utility calculation
-                weights_combined = weights_targets + (weights_apriori if len(apriori_columns) > 0 else [])
-                max_or_min_combined = max_or_min_targets + (max_or_min_apriori if len(apriori_columns) > 0 else [])
-                thresholds_combined = thresholds_targets + (thresholds_apriori if len(apriori_columns) > 0 else [])
+                weights_combined = weights_targets[:len(target_columns)]  # Start with target-related weights
+                max_or_min_combined = max_or_min_targets[:len(target_columns)]  # Start with target-related directions
+                thresholds_combined = thresholds_targets[:len(target_columns)]  # Start with target-related thresholds
 
-               
+              
 
-                # Ensure predictions align with the number of targets
-                if predictions.shape[1] != len(target_columns):
-                    raise ValueError(f"Predictions shape {predictions.shape} does not match the number of target columns {len(target_columns)}.")
+                # Add a priori contributions if applicable
+                # Add a priori contributions if applicable
+                if len(apriori_columns) > 0 and apriori_infer_scaled.shape[1] > 0:
+                    # Ensure alignment of weights_apriori with a priori columns
+                    if len(weights_apriori) < len(apriori_columns):
+                        st.warning(
+                            f"Insufficient weights provided for a priori columns. "
+                            f"Expected {len(apriori_columns)}, but got {len(weights_apriori)}. Defaulting to zero for missing weights."
+                        )
+                        weights_apriori = weights_apriori + [0] * (len(apriori_columns) - len(weights_apriori))
 
-                # Ensure a priori columns align
-                if len(apriori_columns) > 0 and apriori_infer_scaled.shape[1] != len(apriori_columns):
-                    raise ValueError(f"A priori scaled data shape {apriori_infer_scaled.shape} does not match the number of a priori columns {len(apriori_columns)}.")
-
-                # Ensure weights, max_or_min, and thresholds align
-                if len(weights_combined) != len(target_columns) + len(apriori_columns):
-                    raise ValueError(f"Combined weights length {len(weights_combined)} does not match target + a priori columns {len(target_columns) + len(apriori_columns)}.")
-                if len(max_or_min_combined) != len(target_columns) + len(apriori_columns):
-                    raise ValueError(f"Combined max_or_min length {len(max_or_min_combined)} does not match target + a priori columns {len(target_columns) + len(apriori_columns)}.")
-                if len(thresholds_combined) != len(target_columns) + len(apriori_columns):
-                    raise ValueError(f"Combined thresholds length {len(thresholds_combined)} does not match target + a priori columns {len(target_columns) + len(apriori_columns)}.")
-
-                
-                # Combine predictions and a priori data into a single array for utility calculation
-                if apriori_infer_scaled is not None and apriori_infer_scaled.shape[1] > 0:
+                    # Extend weights_combined and other parameters
+                    weights_combined.extend(weights_apriori[:len(apriori_columns)])
+                    max_or_min_combined.extend(max_or_min_apriori[:len(apriori_columns)])
+                    thresholds_combined.extend(thresholds_apriori[:len(apriori_columns)])
+                    
+                    # Combine predictions with a priori data
                     combined_data = np.hstack([predictions, apriori_infer_scaled])
                 else:
+                    # Use predictions only if no a priori data is present
                     combined_data = predictions
+                  
 
 
                 # Ensure combined_data aligns with weights, max_or_min, and thresholds
                 if combined_data.shape[1] != len(weights_combined):
                     raise ValueError(
-                        f"Combined data shape {combined_data.shape[1]} does not match the length of weights_combined {len(weights_combined)}."
+                        f"Combined data shape {combined_data.shape[1]} does not match the length of weights_combined {len(weights_combined)}. "
+                        "Check that the number of selected targets and a priori columns align with the weights."
                     )
 
-                # Calculate utility scores
-                utility_scores = calculate_utility(
-                    predictions=predictions,               # Pass predictions
-                    uncertainties=uncertainty_scores,      # Uncertainty scores
-                    apriori=apriori_infer_scaled if len(apriori_columns) > 0 else None,  # Explicitly pass apriori if present
-                    curiosity=curiosity,                   # Curiosity factor
-                    weights=weights_combined,              # Combined weights
-                    max_or_min=max_or_min_combined,        # Combined optimization directions
-                    thresholds=thresholds_combined         # Combined thresholds
-                )
+                # Ensure weights for predictions and a priori are correctly split
+                prediction_weights = weights_combined[:predictions.shape[1]]
+                apriori_weights = weights_combined[predictions.shape[1]:]
 
+                # Validation for a priori weights alignment
+                if apriori_infer_scaled.shape[1] > 0 and len(apriori_weights) != apriori_infer_scaled.shape[1]:
+                    raise ValueError(
+                        f"A priori data columns ({apriori_infer_scaled.shape[1]}) do not match the number of a priori weights ({len(apriori_weights)})."
+                    )
+
+                # Adjust the call to calculate_utility to include explicitly split weights
+                utility_scores = calculate_utility(
+                    predictions=predictions,                # Only prediction-related columns
+                    uncertainties=uncertainty_scores,       # Uncertainty scores
+                    apriori=apriori_infer_scaled,           # Explicitly pass a priori data
+                    curiosity=curiosity,                    # Curiosity factor
+                    weights=np.array(prediction_weights + apriori_weights),  # Full combined weights
+                    max_or_min=max_or_min_combined,         # Combined optimization directions
+                    thresholds=thresholds_combined          # Combined thresholds
+                )
 
 
 

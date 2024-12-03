@@ -46,12 +46,15 @@ def calculate_utility(predictions, uncertainties, apriori, curiosity, weights, m
         apriori_mean = apriori.mean(axis=0, keepdims=True)
         normalized_apriori = (apriori - apriori_mean) / apriori_std
 
-        # Validate apriori dimensions
-        if apriori.shape[1] != weights.shape[1] - predictions.shape[1]:
+        # Adjust weights to exclude targets
+        if apriori.shape[1] != len(weights[:, predictions.shape[1]:].flatten()):
             raise ValueError(
-                f"A priori dimensions {apriori.shape[1]} do not match expected columns "
-                f"{weights.shape[1] - predictions.shape[1]}."
+                f"A priori data columns ({apriori.shape[1]}) do not match the expected number of weights for a priori data: "
+                f"{len(weights[:, predictions.shape[1]:].flatten())}."
             )
+        apriori_weights = weights[:, predictions.shape[1]:]
+
+
 
         # Apply thresholds
         if thresholds is not None:
@@ -69,7 +72,7 @@ def calculate_utility(predictions, uncertainties, apriori, curiosity, weights, m
                             apriori[:, i] < thresh, 0, normalized_apriori[:, i]
                         )
 
-        weighted_apriori = normalized_apriori * weights[:, predictions.shape[1]:]
+        weighted_apriori = normalized_apriori * apriori_weights
         apriori_utility = weighted_apriori.sum(axis=1)
 
     # Combine all utility components
