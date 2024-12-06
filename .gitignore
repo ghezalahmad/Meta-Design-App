@@ -55,3 +55,5 @@ dist/
 .ipynb_checkpoints/
 */env/
 */.env/
+
+.devcontainer/
