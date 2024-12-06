@@ -1,6 +1,8 @@
 # Ignore the virtual environment directory
 maml2/
-
+# Ignore large files
+mamlapp/lib/python3.12/site-packages/pyarrow/
+mamlapp/lib/python3.12/site-packages/torch/
 # Ignore Python compiled files
 *.pyc
 *.pyo
