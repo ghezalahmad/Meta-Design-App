@@ -38,14 +38,19 @@ def meta_train(meta_model, data, input_columns, target_columns, epochs, inner_lr
     optimizer = optim.Adam(meta_model.parameters(), lr=outer_lr)
     loss_function = torch.nn.MSELoss()
 
+    # Select labeled data (rows without NaN in target columns)
+    labeled_data = data.dropna(subset=target_columns)
+
     for epoch in range(epochs):
         meta_loss = 0.0
 
         for task in range(num_tasks):
-            # Simulate a task by sampling a subset of the data
-            task_data = data.sample(frac=0.2)  # Use 20% of the data for this task
-            inputs = torch.tensor(task_data[input_columns].values, dtype=torch.float32)
-            targets = torch.tensor(task_data[target_columns].values, dtype=torch.float32)
+            # Shuffle labeled data before splitting into support and query sets
+            labeled_data = labeled_data.sample(frac=1).reset_index(drop=True)
+
+            # Prepare inputs and targets
+            inputs = torch.tensor(labeled_data[input_columns].values, dtype=torch.float32)
+            targets = torch.tensor(labeled_data[target_columns].values, dtype=torch.float32)
 
             # Split into support set (inner loop) and query set (outer loop)
             num_support = int(len(inputs) * 0.8)
@@ -78,3 +83,4 @@ def meta_train(meta_model, data, input_columns, target_columns, epochs, inner_lr
             print(f"Epoch {epoch + 1}/{epochs}, Meta-Loss: {meta_loss.item():.4f}")
 
     return meta_model
+

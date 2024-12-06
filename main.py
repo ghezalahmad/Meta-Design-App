@@ -21,6 +21,7 @@ from app.visualization import plot_scatter_matrix, create_tsne_plot
 from app.utils import calculate_uncertainty
 from app.visualization import create_parallel_coordinates
 from app.visualization import create_3d_scatter
+from app.utils import set_seed  # Ensure the function is imported
 
 
 
@@ -334,6 +335,8 @@ if uploaded_file:
 
     # Experiment execution
     if st.button("Run Experiment"):
+        set_seed(42)  # Use a fixed seed for reproducibility
+
         #st.session_state.experiment_run = True
         #st.session_state.tsne_generated = False  # Reset t-SNE flag
         if not input_columns or not target_columns:
@@ -606,14 +609,33 @@ if uploaded_file:
                         mime="text/csv",
                     )
 
-                elif model_type == "Reptile":
+                # Reset weights function
+                def reset_weights(model):
+                    """
+                    Resets the weights of all layers in the model to their initial state.
+                    """
+                    for layer in model.children():
+                        if hasattr(layer, 'reset_parameters'):
+                            layer.reset_parameters()
+
+
+                if model_type == "Reptile":
                     st.write("### Running Reptile Model")
+                    # Prepare labeled and unlabeled data
+                    # Prepare labeled and unlabeled data
+                    labeled_data = data.dropna(subset=target_columns).sort_index()  # Data with targets
+                    unlabeled_data = data[data[target_columns[0]].isna()].sort_index()  # Data without targets
+
                     reptile_model = ReptileModel(len(input_columns), len(target_columns), hidden_size=reptile_hidden_size)
 
+                    # Reset model weights for reproducibility
+                    reset_weights(reptile_model)
+
                     # Train Reptile model
+                    # Train Reptile model on labeled data
                     reptile_model = reptile_train(
                         model=reptile_model,
-                        data=data.loc[known_targets],  # Train on known targets
+                        data=labeled_data,  # Use only labeled data for training
                         input_columns=input_columns,
                         target_columns=target_columns,
                         epochs=reptile_epochs,

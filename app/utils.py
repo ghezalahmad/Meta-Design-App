@@ -1,5 +1,25 @@
 import numpy as np
 from scipy.spatial import distance_matrix
+import random
+import numpy as np
+import torch
+
+
+# Force deterministic behavior in PyTorch
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
+
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+set_seed(42)  # Choose a fixed seed for reproducibility
+
 
 
 # Utility function
@@ -74,33 +94,27 @@ def calculate_novelty(features, labeled_features):
     return novelty
 
 
-import numpy as np
-import torch
 
-def calculate_uncertainty(model, inputs, num_perturbations=20, noise_scale=0.1):
+def calculate_uncertainty(model, inputs, num_perturbations=50, noise_scale=0.5):
     """
-    Calculate uncertainty by adding perturbations to inputs.
+    Calculate uncertainty based on input perturbations.
 
     Args:
-        model (torch.nn.Module): The trained model.
-        inputs (torch.Tensor): The input data as a PyTorch tensor.
-        num_perturbations (int): Number of perturbations to calculate uncertainty.
-        noise_scale (float): Scale of noise to add for perturbations.
+        model: Trained model to predict outputs.
+        inputs: Input tensor.
+        num_perturbations: Number of perturbations to apply.
+        noise_scale: Standard deviation of noise added to inputs.
 
     Returns:
-        np.ndarray: Uncertainty scores for each input sample.
+        Uncertainty scores as the standard deviation of predictions.
     """
-    perturbed_predictions = []
-
+    perturbations = []
+    torch.manual_seed(42)  # Ensure fixed noise generation
     for _ in range(num_perturbations):
-        # Add Gaussian noise to inputs
-        perturbed_inputs = inputs + torch.normal(0, noise_scale, size=inputs.shape)
-        with torch.no_grad():
-            predictions = model(perturbed_inputs)
-        perturbed_predictions.append(predictions.numpy())
+        noise = torch.normal(0, noise_scale, size=inputs.shape)  # Fixed noise
+        perturbed_input = inputs + noise
+        perturbed_prediction = model(perturbed_input).detach().numpy()
+        perturbations.append(perturbed_prediction)
+    perturbations = np.stack(perturbations, axis=0)
+    return perturbations.std(axis=0).mean(axis=1, keepdims=True)
 
-    # Stack predictions and calculate standard deviation
-    perturbed_predictions = np.stack(perturbed_predictions, axis=0)
-    uncertainty_scores = np.std(perturbed_predictions, axis=0).mean(axis=1, keepdims=True)
-
-    return uncertainty_scores

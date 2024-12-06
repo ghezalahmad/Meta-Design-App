@@ -18,32 +18,45 @@ class ReptileModel(nn.Module):
         return self.network(x)
 
 def reptile_train(model, data, input_columns, target_columns, epochs, learning_rate, num_tasks):
+    """
+    Train the Reptile model using all labeled data.
+
+    Args:
+        model (torch.nn.Module): The Reptile model.
+        data (pd.DataFrame): The dataset with both labeled and unlabeled samples.
+        input_columns (list): List of input feature column names.
+        target_columns (list): List of target property column names.
+        epochs (int): Number of training epochs.
+        learning_rate (float): Learning rate for the optimizer.
+        num_tasks (int): Number of simulated tasks (not used in this implementation).
+
+    Returns:
+        torch.nn.Module: The trained model.
+    """
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     loss_function = torch.nn.MSELoss()
 
+    # Use all labeled data
+    labeled_data = data.dropna(subset=target_columns).sort_index()
+
+
+    # Prepare labeled inputs and targets
+    inputs = torch.tensor(labeled_data[input_columns].values, dtype=torch.float32)
+    targets = torch.tensor(labeled_data[target_columns].values, dtype=torch.float32)
+
     for epoch in range(epochs):
-        meta_loss = 0.0
+        model.train()  # Ensure the model is in training mode
+        predictions = model(inputs)  # Forward pass
+        loss = loss_function(predictions, targets)  # Compute loss
 
-        for _ in range(num_tasks):
-            # Simulate a task
-            task_data = data.sample(frac=0.2)  # Sample 20% of data for this task
-            inputs = torch.tensor(task_data[input_columns].values, dtype=torch.float32)
-            targets = torch.tensor(task_data[target_columns].values, dtype=torch.float32)
+        optimizer.zero_grad()  # Clear previous gradients
+        loss.backward()  # Backpropagation
+        optimizer.step()  # Update model parameters
 
-            # Forward pass
-            predictions = model(inputs)
-            task_loss = loss_function(predictions, targets)
-
-            # Backpropagation
-            optimizer.zero_grad()
-            task_loss.backward()
-            optimizer.step()
-
-            # Aggregate loss for reporting
-            meta_loss += task_loss.item()
-
-        # Log epoch progress
-        print(f"Epoch {epoch+1}/{epochs}, Meta-Loss: {meta_loss / num_tasks:.4f}")
+        # Log progress
+        print(f"Epoch {epoch + 1}/{epochs}, Loss: {loss.item():.4f}")
 
     return model
+
+
 
