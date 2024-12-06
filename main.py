@@ -22,7 +22,8 @@ from app.utils import calculate_uncertainty
 from app.visualization import create_parallel_coordinates
 from app.visualization import create_3d_scatter
 from app.utils import set_seed  # Ensure the function is imported
-
+from app.llm_suggestion import get_llm_suggestions
+from app.session_management import restore_session
 
 
 
@@ -33,6 +34,9 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(RESULT_FOLDER, exist_ok=True)
 
 
+# Define callback function to update checkbox state
+def toggle_llm_checkbox():
+    st.session_state["llm_checkbox"] = not st.session_state["llm_checkbox"]
 
 
 # Streamlit app setup
@@ -239,6 +243,19 @@ if uploaded_session:
         st.sidebar.error(f"Failed to restore session: {str(e)}")
 
 
+
+
+# Initialize session state variables
+if "experiment_run" not in st.session_state:
+    st.session_state["experiment_run"] = False
+
+if "result_df" not in st.session_state:
+    st.session_state["result_df"] = None  # Set to None initially to differentiate
+
+if "llm_suggestions" not in st.session_state:
+    st.session_state["llm_suggestions"] = pd.DataFrame()
+
+
 # File upload
 # Initialize input, target, and apriori columns globally
 input_columns = []
@@ -324,6 +341,10 @@ if uploaded_file:
     if "dropdown_option" not in st.session_state:
         st.session_state.dropdown_option = "None"
 
+
+
+
+
     # Add "Parallel Coordinate Plot" to the dropdown menu
     st.session_state.dropdown_option = st.selectbox(
         "Select a Plot to Generate:",
@@ -335,6 +356,40 @@ if uploaded_file:
 
     # Experiment execution
     if st.button("Run Experiment"):
+        st.session_state["experiment_run"] = True
+        # Simulate generating results (replace with actual results processing)
+        st.session_state["result_df"] = data.head(5)
+
+    # =============================
+    # LLM
+    # =============================
+    # Show Results After Running Experiment
+    if st.session_state["experiment_run"] and st.session_state["result_df"] is not None:
+        #st.write("### Results Table")
+        #st.dataframe(st.session_state["result_df"])  # Display the result table
+
+        # LLM Suggestions Section
+        llm_checkbox = st.checkbox("Let LLM suggest the best samples to test in the lab")
+
+        if llm_checkbox:
+            api_key = st.text_input("Enter your API Key:", type="password")
+            num_samples = st.slider("Number of samples to suggest:", min_value=1, max_value=10, value=3)
+
+            if st.button("Get LLM Suggestions"):
+                if not api_key:
+                    st.error("Please enter your API key!")
+                else:
+                    # Simulate LLM suggestion logic
+                    suggestions = st.session_state["result_df"].head(num_samples)
+                    st.session_state["llm_suggestions"] = suggestions
+                    st.success("LLM Suggestions Generated!")
+
+            # Display LLM Suggestions
+            if not st.session_state["llm_suggestions"].empty:
+                st.write("### Suggested Samples by LLM")
+                st.dataframe(st.session_state["llm_suggestions"])
+    
+
         set_seed(42)  # Use a fixed seed for reproducibility
 
         #st.session_state.experiment_run = True
@@ -599,6 +654,14 @@ if uploaded_file:
                     # Display results
                     st.write("### Results Table")
                     st.dataframe(result_df, use_container_width=True)
+
+
+
+
+
+
+
+
                     # Add a download button for predictions
                     st.write("### Download Predictions")
                     csv = result_df.to_csv(index=False)
@@ -765,15 +828,15 @@ if uploaded_file:
 
                    
 
-                    # Add a download button for predictions
-                    st.write("### Download Predictions")
-                    csv = result_df.to_csv(index=False)
-                    st.download_button(
-                        label="Download Results as CSV",
-                        data=csv,
-                        file_name="reptile_predictions.csv",
-                        mime="text/csv",
-                    )
+                        # Add a download button for predictions
+                        st.write("### Download Predictions")
+                        csv = result_df.to_csv(index=False)
+                        st.download_button(
+                            label="Download Results as CSV",
+                            data=csv,
+                            file_name="reptile_predictions.csv",
+                            mime="text/csv",
+                        )
 
 
 
