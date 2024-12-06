@@ -19,6 +19,11 @@ from app.models import MAMLModel, meta_train
 from app.utils import calculate_utility, calculate_novelty
 from app.visualization import plot_scatter_matrix, create_tsne_plot
 from app.utils import calculate_uncertainty
+from app.visualization import create_parallel_coordinates
+from app.visualization import create_3d_scatter
+
+
+
 
 # Set up directories
 UPLOAD_FOLDER = "uploads"
@@ -30,8 +35,8 @@ os.makedirs(RESULT_FOLDER, exist_ok=True)
 
 
 # Streamlit app setup
-st.set_page_config(page_title="MAML Dashboard", layout="wide")
-st.title("MAML Dashboard")
+st.set_page_config(page_title="MetaDesign Dashboard", layout="wide")
+st.title("MetaDesign Dashboard")
 
 # Sidebar: Model Selection
 with st.sidebar.expander("Model Selection", expanded=True):  # Expanded by default
@@ -274,34 +279,36 @@ if uploaded_file:
 
 
     # Target settings
-    st.header("Target Settings")
-    max_or_min_targets = []
-    weights_targets = []
-    thresholds_targets = []
-    for col in target_columns:
-        with st.expander(f"Target: {col}"):
-            optimize_for = st.radio(f"Optimize {col} for:", ["Maximize", "Minimize"], index=0)
-            weight = st.number_input(f"Weight for {col}:", value=1.0, step=0.1)
-            threshold = st.text_input(f"Threshold (optional) for {col}:", value="")
-            max_or_min_targets.append("max" if optimize_for == "Maximize" else "min")
-            weights_targets.append(weight)
-            thresholds_targets.append(float(threshold) if threshold else None)
+    if target_columns:
+        st.markdown("#### Target Settings")
+        max_or_min_targets = []
+        weights_targets = []
+        thresholds_targets = []
+        for col in target_columns:
+            with st.expander(f"Target: {col}"):
+                optimize_for = st.radio(f"Optimize {col} for:", ["Maximize", "Minimize"], index=0)
+                weight = st.number_input(f"Weight for {col}:", value=1.0, step=0.1)
+                threshold = st.text_input(f"Threshold (optional) for {col}:", value="")
+                max_or_min_targets.append("max" if optimize_for == "Maximize" else "min")
+                weights_targets.append(weight)
+                thresholds_targets.append(float(threshold) if threshold else None)
 
     
     # Apriori Settings
-    st.header("Apriori Settings")
-    max_or_min_apriori = []
-    weights_apriori = []
-    thresholds_apriori = []
+    if apriori_columns:
+        st.markdown("#### Apriori Settings")
+        max_or_min_apriori = []
+        weights_apriori = []
+        thresholds_apriori = []
 
-    for col in apriori_columns:
-        with st.expander(f"A Priori: {col}"):
-            optimize_for = st.radio(f"Optimize {col} for:", ["Maximize", "Minimize"], index=0)
-            weight = st.number_input(f"Weight for {col}:", value=1.0, step=0.1)
-            threshold = st.text_input(f"Threshold (optional) for {col}:", value="")
-            max_or_min_apriori.append("max" if optimize_for == "Maximize" else "min")
-            weights_apriori.append(weight)
-            thresholds_apriori.append(float(threshold) if threshold else None)
+        for col in apriori_columns:
+            with st.expander(f"A Priori: {col}"):
+                optimize_for = st.radio(f"Optimize {col} for:", ["Maximize", "Minimize"], index=0)
+                weight = st.number_input(f"Weight for {col}:", value=1.0, step=0.1)
+                threshold = st.text_input(f"Threshold (optional) for {col}:", value="")
+                max_or_min_apriori.append("max" if optimize_for == "Maximize" else "min")
+                weights_apriori.append(weight)
+                thresholds_apriori.append(float(threshold) if threshold else None)
 
 
 
@@ -316,13 +323,12 @@ if uploaded_file:
     if "dropdown_option" not in st.session_state:
         st.session_state.dropdown_option = "None"
 
-    # Dropdown menu for additional functionalities
+    # Add "Parallel Coordinate Plot" to the dropdown menu
     st.session_state.dropdown_option = st.selectbox(
         "Select a Plot to Generate:",
-        ["None", "Scatter Plot", "Radar Chart", "Generate t-SNE Plot"],
+        ["None", "Scatter Plot", "Radar Chart", "Generate t-SNE Plot", "3D Scatter Plot", "Parallel Coordinate Plot"],
         key="dropdown_menu",
     )
-
 
 
 
@@ -522,6 +528,7 @@ if uploaded_file:
                     st.session_state.experiment_run = True  # Set experiment flag
                     # After training or inference
                     # Generate the selected plot
+                    # Dropdown menu logic
                     if st.session_state.experiment_run and "result_df" in st.session_state and not st.session_state.result_df.empty:
                         selected_option = st.session_state.dropdown_option
 
@@ -547,20 +554,41 @@ if uploaded_file:
                             st.plotly_chart(radar_fig)
 
                         elif selected_option == "Generate t-SNE Plot":
-                            try:
-                                if "Utility" not in st.session_state.result_df.columns or len(input_columns) == 0:
-                                    st.error("Ensure the dataset has utility scores and selected input features.")
-                                else:
-                                    tsne_features = input_columns + ["Utility"]
-                                    tsne_plot = create_tsne_plot(
-                                        data=st.session_state.result_df,
-                                        features=tsne_features,
-                                        utility_col="Utility",
-                                    )
-                                    st.write("### t-SNE Plot")
-                                    st.plotly_chart(tsne_plot)
-                            except Exception as e:
-                                st.error(f"An error occurred while generating the t-SNE plot: {str(e)}")
+                            if "Utility" in st.session_state.result_df.columns and len(input_columns) > 0:
+                                tsne_features = input_columns + ["Utility"]
+                                tsne_plot = create_tsne_plot(
+                                    data=st.session_state.result_df,
+                                    features=tsne_features,
+                                    utility_col="Utility",
+                                )
+                                st.write("### t-SNE Plot")
+                                st.plotly_chart(tsne_plot)
+                            else:
+                                st.error("Ensure the dataset has utility scores and selected input features.")
+
+                        elif selected_option == "3D Scatter Plot":
+                            if len(target_columns) >= 2:
+                                st.write("### 3D Scatter Plot")
+                                scatter_3d_fig = create_3d_scatter(
+                                    result_df=st.session_state.result_df,
+                                    x_column=target_columns[0],
+                                    y_column=target_columns[1],
+                                    z_column="Utility",
+                                    color_column="Utility",
+                                )
+                                st.plotly_chart(scatter_3d_fig)
+                            else:
+                                st.error("3D scatter plot requires at least two target properties.")
+
+                        elif selected_option == "Parallel Coordinate Plot":
+                            st.write("### Parallel Coordinate Plot")
+                            dimensions = target_columns + ["Utility", "Novelty", "Uncertainty"]
+                            parallel_fig = create_parallel_coordinates(
+                                result_df=st.session_state.result_df,
+                                dimensions=dimensions,
+                                color_column="Utility",
+                            )
+                            st.plotly_chart(parallel_fig)
 
 
                 
@@ -649,6 +677,7 @@ if uploaded_file:
                     st.session_state.experiment_run = True  # Set experiment flag
                     # After training or inference
                     # Generate the selected plot
+                    # Dropdown menu logic
                     if st.session_state.experiment_run and "result_df" in st.session_state and not st.session_state.result_df.empty:
                         selected_option = st.session_state.dropdown_option
 
@@ -674,20 +703,42 @@ if uploaded_file:
                             st.plotly_chart(radar_fig)
 
                         elif selected_option == "Generate t-SNE Plot":
-                            try:
-                                if "Utility" not in st.session_state.result_df.columns or len(input_columns) == 0:
-                                    st.error("Ensure the dataset has utility scores and selected input features.")
-                                else:
-                                    tsne_features = input_columns + ["Utility"]
-                                    tsne_plot = create_tsne_plot(
-                                        data=st.session_state.result_df,
-                                        features=tsne_features,
-                                        utility_col="Utility",
-                                    )
-                                    st.write("### t-SNE Plot")
-                                    st.plotly_chart(tsne_plot)
-                            except Exception as e:
-                                st.error(f"An error occurred while generating the t-SNE plot: {str(e)}")
+                            if "Utility" in st.session_state.result_df.columns and len(input_columns) > 0:
+                                tsne_features = input_columns + ["Utility"]
+                                tsne_plot = create_tsne_plot(
+                                    data=st.session_state.result_df,
+                                    features=tsne_features,
+                                    utility_col="Utility",
+                                )
+                                st.write("### t-SNE Plot")
+                                st.plotly_chart(tsne_plot)
+                            else:
+                                st.error("Ensure the dataset has utility scores and selected input features.")
+
+                        elif selected_option == "3D Scatter Plot":
+                            if len(target_columns) >= 2:
+                                st.write("### 3D Scatter Plot")
+                                scatter_3d_fig = create_3d_scatter(
+                                    result_df=st.session_state.result_df,
+                                    x_column=target_columns[0],
+                                    y_column=target_columns[1],
+                                    z_column="Utility",
+                                    color_column="Utility",
+                                )
+                                st.plotly_chart(scatter_3d_fig)
+                            else:
+                                st.error("3D scatter plot requires at least two target properties.")
+
+                        elif selected_option == "Parallel Coordinate Plot":
+                            st.write("### Parallel Coordinate Plot")
+                            dimensions = target_columns + ["Utility", "Novelty", "Uncertainty"]
+                            parallel_fig = create_parallel_coordinates(
+                                result_df=st.session_state.result_df,
+                                dimensions=dimensions,
+                                color_column="Utility",
+                            )
+                            st.plotly_chart(parallel_fig)
+
 
 
                    

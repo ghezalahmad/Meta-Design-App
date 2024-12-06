@@ -91,3 +91,72 @@ def plot_histogram(data, column_name):
 def plot_scatter(data, x, y, labels=None):
     fig = px.scatter(data, x=x, y=y, color=labels, title=f"{x} vs {y}")
     st.plotly_chart(fig)
+
+
+
+import plotly.express as px
+
+def create_parallel_coordinates(result_df, dimensions, color_column):
+    """
+    Create a parallel coordinate plot using Plotly.
+    
+    Args:
+        result_df (pd.DataFrame): DataFrame containing the results.
+        dimensions (list): List of column names to include as axes.
+        color_column (str): Column name for coloring the lines.
+
+    Returns:
+        fig: Plotly figure for the parallel coordinate plot.
+    """
+    fig = px.parallel_coordinates(
+        result_df,
+        dimensions=dimensions,
+        color=color_column,
+        title="Parallel Coordinate Plot",
+        labels={col: col for col in dimensions + [color_column]},
+        template="plotly_white",
+    )
+    return fig
+
+
+# Function for 3D scatter plot
+import plotly.express as px
+
+def create_3d_scatter(result_df, x_column, y_column, z_column, color_column):
+    """
+    Create a 3D scatter plot using Plotly with larger dimensions.
+    
+    Args:
+        result_df (pd.DataFrame): DataFrame containing the results.
+        x_column (str): Column name for the x-axis.
+        y_column (str): Column name for the y-axis.
+        z_column (str): Column name for the z-axis.
+        color_column (str): Column name for coloring the points.
+
+    Returns:
+        fig: Plotly figure for the 3D scatter plot.
+    """
+    fig = px.scatter_3d(
+        result_df,
+        x=x_column,
+        y=y_column,
+        z=z_column,
+        color=color_column,
+        title=f"3D Scatter Plot ({x_column} vs {y_column} vs {z_column})",
+        labels={x_column: x_column, y_column: y_column, z_column: z_column, color_column: color_column},
+        template="plotly_white",
+    )
+    # Increase marker size
+    fig.update_traces(marker=dict(size=8))
+    # Increase the figure size
+    fig.update_layout(
+        scene=dict(
+            xaxis_title=x_column,
+            yaxis_title=y_column,
+            zaxis_title=z_column,
+        ),
+        height=900,  # Increased height
+        width=1200,   # Increased width
+        margin=dict(l=0, r=0, t=50, b=0)  # Adjusted margins
+    )
+    return fig
