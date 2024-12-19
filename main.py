@@ -41,7 +41,10 @@ def toggle_llm_checkbox():
 
 # Streamlit app setup
 st.set_page_config(page_title="MetaDesign Dashboard", layout="wide")
+#st.image("logo.png", width=150)  # Optional logo
 st.title("MetaDesign Dashboard")
+st.markdown("Optimize material properties using advanced meta-learning techniques like MAML and Reptile.")
+
 
 # Sidebar: Model Selection
 with st.sidebar.expander("Model Selection", expanded=True):  # Expanded by default
@@ -262,7 +265,8 @@ input_columns = []
 target_columns = []
 apriori_columns = []
 
-# File upload
+# Dataset Upload Section
+st.markdown("---")
 uploaded_file = st.file_uploader("Upload Dataset (CSV format):", type=["csv"])
 if uploaded_file:
     file_path = os.path.join(UPLOAD_FOLDER, uploaded_file.name)
@@ -588,6 +592,8 @@ if uploaded_file:
                     }).sort_values(by="Utility", ascending=False).reset_index(drop=True)
 
 
+
+
                     st.session_state.result_df = result_df  # Store result in session state
                     st.session_state.experiment_run = True  # Set experiment flag
                     # After training or inference
@@ -657,14 +663,16 @@ if uploaded_file:
 
                 
                 
-                    # Display results
-                    st.write("### Results Table")
-                    st.dataframe(result_df, use_container_width=True)
+                    # Add a checkbox for highlighting maximum values
+                    highlight_checkbox = st.checkbox("Highlight Maximum Values in Results Table")
 
-
-
-
-
+                    # Display results based on checkbox selection
+                    if highlight_checkbox:
+                        st.write("### Results Table (Highlighted Maximum Values)")
+                        st.dataframe(result_df.style.highlight_max(axis=0), use_container_width=True)
+                    else:
+                        st.write("### Results Table")
+                        st.dataframe(result_df, use_container_width=True)
 
 
 
@@ -761,8 +769,20 @@ if uploaded_file:
                     }).sort_values(by="Utility", ascending=False).reset_index(drop=True)
 
                     # Display Results
-                    st.write("### Results Table")
-                    st.dataframe(result_df, use_container_width=True)
+                    #st.write("### Results Table")
+                    #st.dataframe(result_df, use_container_width=True)
+
+                     # Add a checkbox for highlighting maximum values
+                    highlight_checkbox = st.checkbox("Highlight Maximum Values in Results Table")
+
+                    # Display results based on checkbox selection
+                    if highlight_checkbox:
+                        st.write("### Results Table (Highlighted Maximum Values)")
+                        st.dataframe(result_df.style.highlight_max(axis=0), use_container_width=True)
+                    else:
+                        st.write("### Results Table")
+                        st.dataframe(result_df, use_container_width=True)
+
 
                     st.session_state.result_df = result_df  # Store result in session state
                     st.session_state.experiment_run = True  # Set experiment flag
