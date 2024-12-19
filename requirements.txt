@@ -7,3 +7,4 @@ scipy
 plotly
 scikit-optimize
 seaborn
+openai
