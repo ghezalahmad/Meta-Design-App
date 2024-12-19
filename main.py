@@ -420,13 +420,19 @@ if uploaded_file:
                 targets_train_scaled = scaler_targets.fit_transform(targets_train)
 
                 # Scale a priori data (if selected)
+                # Scale a priori data (if selected)
                 if apriori_columns:
                     apriori_data = data[apriori_columns]
                     scaler_apriori = StandardScaler()
                     apriori_scaled = scaler_apriori.fit_transform(apriori_data.loc[known_targets])
                     apriori_infer_scaled = scaler_apriori.transform(apriori_data.loc[~known_targets])
+                    weights_apriori = [1.0] * len(apriori_columns)  # Assign default weights if apriori columns are selected
+                    thresholds_apriori = [None] * len(apriori_columns)  # Assign default thresholds as None for apriori columns
                 else:
                     apriori_infer_scaled = np.zeros((inputs_infer.shape[0], 1))  # Default to zeros if no a priori data
+                    weights_apriori = []  # Ensure weights_apriori is defined
+                    thresholds_apriori = []  # Ensure thresholds_apriori is defined
+
 
 
                 # =============================
