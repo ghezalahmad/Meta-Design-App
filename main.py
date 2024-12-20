@@ -432,6 +432,8 @@ if uploaded_file:
                     apriori_infer_scaled = scaler_apriori.transform(apriori_data.loc[~known_targets])
                     weights_apriori = [1.0] * len(apriori_columns)  # Assign default weights if apriori columns are selected
                     thresholds_apriori = [None] * len(apriori_columns)  # Assign default thresholds as None for apriori columns
+                    apriori_predictions_original_scale = scaler_apriori.inverse_transform(apriori_infer_scaled)
+
                 else:
                     apriori_infer_scaled = np.zeros((inputs_infer.shape[0], 1))  # Default to zeros if no a priori data
                     weights_apriori = []  # Ensure weights_apriori is defined
@@ -582,14 +584,17 @@ if uploaded_file:
 
                     # Create result dataframe (exclude training samples)
                     # global result_df
+                    # Combine Results
                     result_df = pd.DataFrame({
                         "Idx_Sample": idx_samples,
                         "Utility": utility_scores,
                         "Novelty": novelty_scores,
                         "Uncertainty": uncertainty_scores.flatten(),
                         **{col: predictions[:, i] for i, col in enumerate(target_columns)},
+                        **{col: apriori_predictions_original_scale[:, i] for i, col in enumerate(apriori_columns)},  # Use original scale
                         **inputs_infer.reset_index(drop=True).to_dict(orient="list"),
                     }).sort_values(by="Utility", ascending=False).reset_index(drop=True)
+
 
 
 
@@ -659,8 +664,6 @@ if uploaded_file:
                                 color_column="Utility",
                             )
                             st.plotly_chart(parallel_fig)
-
-
                 
                 
                     # Add a checkbox for highlighting maximum values
@@ -765,8 +768,11 @@ if uploaded_file:
                         "Novelty": novelty_scores,
                         "Uncertainty": uncertainty_scores.flatten(),
                         **{col: predictions[:, i] for i, col in enumerate(target_columns)},
+                        **{col: apriori_predictions_original_scale[:, i] for i, col in enumerate(apriori_columns)},  # Use original scale
                         **inputs_infer.reset_index(drop=True).to_dict(orient="list"),
                     }).sort_values(by="Utility", ascending=False).reset_index(drop=True)
+
+
 
                     # Display Results
                     #st.write("### Results Table")
@@ -849,10 +855,7 @@ if uploaded_file:
                                 color_column="Utility",
                             )
                             st.plotly_chart(parallel_fig)
-
-
-
-                   
+                  
 
                         # Add a download button for predictions
                         st.write("### Download Predictions")
@@ -864,13 +867,8 @@ if uploaded_file:
                             mime="text/csv",
                         )
 
-
-
-
                 
-
                
-
                  # Export Session Data
                 session_data = {
                     "input_columns": input_columns,
