@@ -17,7 +17,7 @@ from sklearn.manifold import TSNE
 from app.reptile_model import ReptileModel, reptile_train
 from app.models import MAMLModel, meta_train
 from app.utils import calculate_utility, calculate_novelty
-from app.visualization import plot_scatter_matrix, create_tsne_plot
+from app.visualization import plot_scatter_matrix_with_uncertainty, create_tsne_plot_with_hover
 from app.utils import calculate_uncertainty
 from app.visualization import create_parallel_coordinates
 from app.visualization import create_3d_scatter
@@ -349,12 +349,7 @@ if uploaded_file:
 
 
 
-    # Add "Parallel Coordinate Plot" to the dropdown menu
-    st.session_state.dropdown_option = st.selectbox(
-        "Select a Plot to Generate:",
-        ["None", "Scatter Plot", "Radar Chart", "Generate t-SNE Plot", "3D Scatter Plot", "Parallel Coordinate Plot"],
-        key="dropdown_menu",
-    )
+   
 
 
 
@@ -595,75 +590,101 @@ if uploaded_file:
                         **inputs_infer.reset_index(drop=True).to_dict(orient="list"),
                     }).sort_values(by="Utility", ascending=False).reset_index(drop=True)
 
+                     
+
+
+
+
+
+
+
+
+
+
 
 
 
 
                     st.session_state.result_df = result_df  # Store result in session state
                     st.session_state.experiment_run = True  # Set experiment flag
-                    # After training or inference
-                    # Generate the selected plot
-                    # Dropdown menu logic
+
                     if st.session_state.experiment_run and "result_df" in st.session_state and not st.session_state.result_df.empty:
-                        selected_option = st.session_state.dropdown_option
+                        selected_option = st.selectbox(
+                            "Select Plot to Generate",
+                            ["Scatter Matrix", "t-SNE Plot", "3D Scatter Plot", "Parallel Coordinate Plot", "Scatter Plot"],
+                            key="dropdown_menu",
+                        )
 
-                        if selected_option == "Scatter Plot":
-                            scatter_fig = px.scatter(
-                                st.session_state.result_df,
-                                x=target_columns[0],
-                                y="Utility",
-                                color="Utility",
-                                title="Utility vs Target",
-                                labels={"Utility": "Utility", target_columns[0]: target_columns[0]},
-                                template="plotly_white",
-                            )
-                            st.write("### Scatter Plot")
-                            st.plotly_chart(scatter_fig)
-
-                        elif selected_option == "Radar Chart":
-                            categories = target_columns + ["Utility", "Novelty", "Uncertainty"]
-                            values = [st.session_state.result_df[col].mean() for col in categories]
-                            radar_fig = go.Figure()
-                            radar_fig.add_trace(go.Scatterpolar(r=values, theta=categories, fill="toself"))
-                            st.write("### Radar Chart")
-                            st.plotly_chart(radar_fig)
-
-                        elif selected_option == "Generate t-SNE Plot":
-                            if "Utility" in st.session_state.result_df.columns and len(input_columns) > 0:
-                                tsne_features = input_columns + ["Utility"]
-                                tsne_plot = create_tsne_plot(
-                                    data=st.session_state.result_df,
-                                    features=tsne_features,
-                                    utility_col="Utility",
+                        if st.button("Generate Plot"):
+                            if selected_option == "Scatter Plot":
+                                scatter_fig = px.scatter(
+                                    st.session_state.result_df,
+                                    x=target_columns[0],
+                                    y="Utility",
+                                    color="Utility",
+                                    title="Utility vs Target",
+                                    labels={"Utility": "Utility", target_columns[0]: target_columns[0]},
+                                    template="plotly_white",
                                 )
-                                st.write("### t-SNE Plot")
-                                st.plotly_chart(tsne_plot)
-                            else:
-                                st.error("Ensure the dataset has utility scores and selected input features.")
+                                st.write("### Scatter Plot")
+                                st.plotly_chart(scatter_fig)
 
-                        elif selected_option == "3D Scatter Plot":
-                            if len(target_columns) >= 2:
-                                st.write("### 3D Scatter Plot")
-                                scatter_3d_fig = create_3d_scatter(
-                                    result_df=st.session_state.result_df,
-                                    x_column=target_columns[0],
-                                    y_column=target_columns[1],
-                                    z_column="Utility",
-                                    color_column="Utility",
-                                )
-                                st.plotly_chart(scatter_3d_fig)
-                            else:
-                                st.error("3D scatter plot requires at least two target properties.")
+                            elif selected_option == "Scatter Matrix":
+                                if len(target_columns) < 2:
+                                    st.error("Scatter Matrix requires at least two target properties. Please select more target properties.")
+                                else:
+                                    try:
+                                        scatter_matrix_fig = plot_scatter_matrix_with_uncertainty(
+                                            result_df=st.session_state.result_df,
+                                            target_columns=target_columns,
+                                            utility_scores=st.session_state.result_df["Utility"]
+                                        )
+                                        st.write("### Scatter Matrix of Target Properties")
+                                        st.plotly_chart(scatter_matrix_fig)
+                                    except Exception as e:
+                                        st.error(f"An error occurred while generating the Scatter Matrix: {str(e)}")
 
-                        elif selected_option == "Parallel Coordinate Plot":
-                            st.write("### Parallel Coordinate Plot")
-                            dimensions = target_columns + ["Utility", "Novelty", "Uncertainty"]
-                            parallel_fig = create_parallel_coordinates(
-                                result_df=st.session_state.result_df,
-                                dimensions=dimensions,
-                                color_column="Utility",
-                            )
-                            st.plotly_chart(parallel_fig)
+
+                            elif selected_option == "t-SNE Plot":
+                                if "Utility" in st.session_state.result_df.columns and len(input_columns) > 0:
+                                    tsne_features = input_columns
+                                    tsne_fig = create_tsne_plot_with_hover(
+                                        data=st.session_state.result_df,
+                                        features=tsne_features,
+                                        utility_col="Utility",
+                                    )
+                                    st.write("### t-SNE Plot")
+                                    st.plotly_chart(tsne_fig)
+                                else:
+                                    st.error("Ensure the dataset has utility scores and selected input features.")
+
+                            elif selected_option == "3D Scatter Plot":
+                                if len(target_columns) >= 2:
+                                    scatter_3d_fig = create_3d_scatter(
+                                        result_df=st.session_state.result_df,
+                                        x_column=target_columns[0],
+                                        y_column=target_columns[1],
+                                        z_column="Utility",
+                                        color_column="Utility",
+                                    )
+                                    st.write("### 3D Scatter Plot")
+                                    st.plotly_chart(scatter_3d_fig)
+                                else:
+                                    st.error("3D scatter plot requires at least two target columns.")
+
+                            elif selected_option == "Parallel Coordinate Plot":
+                                if len(target_columns) > 1:
+                                    dimensions = target_columns + ["Utility", "Novelty", "Uncertainty"]
+                                    parallel_fig = create_parallel_coordinates(
+                                        result_df=st.session_state.result_df,
+                                        dimensions=dimensions,
+                                        color_column="Utility",
+                                    )
+                                    st.write("### Parallel Coordinate Plot")
+                                    st.plotly_chart(parallel_fig)
+                                else:
+                                    st.error("Parallel Coordinate Plot requires at least two target columns.")
+
                 
                 
                     # Add a checkbox for highlighting maximum values
@@ -792,69 +813,85 @@ if uploaded_file:
 
                     st.session_state.result_df = result_df  # Store result in session state
                     st.session_state.experiment_run = True  # Set experiment flag
-                    # After training or inference
-                    # Generate the selected plot
-                    # Dropdown menu logic
+
                     if st.session_state.experiment_run and "result_df" in st.session_state and not st.session_state.result_df.empty:
-                        selected_option = st.session_state.dropdown_option
+                        selected_option = st.selectbox(
+                            "Select Plot to Generate",
+                            ["Scatter Matrix", "t-SNE Plot", "3D Scatter Plot", "Parallel Coordinate Plot", "Scatter Plot"],
+                            key="dropdown_menu",
+                        )
 
-                        if selected_option == "Scatter Plot":
-                            scatter_fig = px.scatter(
-                                st.session_state.result_df,
-                                x=target_columns[0],
-                                y="Utility",
-                                color="Utility",
-                                title="Utility vs Target",
-                                labels={"Utility": "Utility", target_columns[0]: target_columns[0]},
-                                template="plotly_white",
-                            )
-                            st.write("### Scatter Plot")
-                            st.plotly_chart(scatter_fig)
-
-                        elif selected_option == "Radar Chart":
-                            categories = target_columns + ["Utility", "Novelty", "Uncertainty"]
-                            values = [st.session_state.result_df[col].mean() for col in categories]
-                            radar_fig = go.Figure()
-                            radar_fig.add_trace(go.Scatterpolar(r=values, theta=categories, fill="toself"))
-                            st.write("### Radar Chart")
-                            st.plotly_chart(radar_fig)
-
-                        elif selected_option == "Generate t-SNE Plot":
-                            if "Utility" in st.session_state.result_df.columns and len(input_columns) > 0:
-                                tsne_features = input_columns + ["Utility"]
-                                tsne_plot = create_tsne_plot(
-                                    data=st.session_state.result_df,
-                                    features=tsne_features,
-                                    utility_col="Utility",
+                        if st.button("Generate Plot"):
+                            if selected_option == "Scatter Plot":
+                                scatter_fig = px.scatter(
+                                    st.session_state.result_df,
+                                    x=target_columns[0],
+                                    y="Utility",
+                                    color="Utility",
+                                    title="Utility vs Target",
+                                    labels={"Utility": "Utility", target_columns[0]: target_columns[0]},
+                                    template="plotly_white",
                                 )
-                                st.write("### t-SNE Plot")
-                                st.plotly_chart(tsne_plot)
-                            else:
-                                st.error("Ensure the dataset has utility scores and selected input features.")
+                                st.write("### Scatter Plot")
+                                st.plotly_chart(scatter_fig)
 
-                        elif selected_option == "3D Scatter Plot":
-                            if len(target_columns) >= 2:
-                                st.write("### 3D Scatter Plot")
-                                scatter_3d_fig = create_3d_scatter(
-                                    result_df=st.session_state.result_df,
-                                    x_column=target_columns[0],
-                                    y_column=target_columns[1],
-                                    z_column="Utility",
-                                    color_column="Utility",
-                                )
-                                st.plotly_chart(scatter_3d_fig)
-                            else:
-                                st.error("3D scatter plot requires at least two target properties.")
+                            elif selected_option == "Scatter Matrix":
+                                if len(target_columns) < 2:
+                                    st.error("Scatter Matrix requires at least two target properties. Please select more target properties.")
+                                else:
+                                    try:
+                                        scatter_matrix_fig = plot_scatter_matrix_with_uncertainty(
+                                            result_df=st.session_state.result_df,
+                                            target_columns=target_columns,
+                                            utility_scores=st.session_state.result_df["Utility"]
+                                        )
+                                        st.write("### Scatter Matrix of Target Properties")
+                                        st.plotly_chart(scatter_matrix_fig)
+                                    except Exception as e:
+                                        st.error(f"An error occurred while generating the Scatter Matrix: {str(e)}")
 
-                        elif selected_option == "Parallel Coordinate Plot":
-                            st.write("### Parallel Coordinate Plot")
-                            dimensions = target_columns + ["Utility", "Novelty", "Uncertainty"]
-                            parallel_fig = create_parallel_coordinates(
-                                result_df=st.session_state.result_df,
-                                dimensions=dimensions,
-                                color_column="Utility",
-                            )
-                            st.plotly_chart(parallel_fig)
+
+                            elif selected_option == "t-SNE Plot":
+                                if "Utility" in st.session_state.result_df.columns and len(input_columns) > 0:
+                                    tsne_features = input_columns
+                                    tsne_fig = create_tsne_plot_with_hover(
+                                        data=st.session_state.result_df,
+                                        features=tsne_features,
+                                        utility_col="Utility",
+                                    )
+                                    st.write("### t-SNE Plot")
+                                    st.plotly_chart(tsne_fig)
+                                else:
+                                    st.error("Ensure the dataset has utility scores and selected input features.")
+
+                            elif selected_option == "3D Scatter Plot":
+                                if len(target_columns) >= 2:
+                                    scatter_3d_fig = create_3d_scatter(
+                                        result_df=st.session_state.result_df,
+                                        x_column=target_columns[0],
+                                        y_column=target_columns[1],
+                                        z_column="Utility",
+                                        color_column="Utility",
+                                    )
+                                    st.write("### 3D Scatter Plot")
+                                    st.plotly_chart(scatter_3d_fig)
+                                else:
+                                    st.error("3D scatter plot requires at least two target columns.")
+
+                            elif selected_option == "Parallel Coordinate Plot":
+                                if len(target_columns) > 1:
+                                    dimensions = target_columns + ["Utility", "Novelty", "Uncertainty"]
+                                    parallel_fig = create_parallel_coordinates(
+                                        result_df=st.session_state.result_df,
+                                        dimensions=dimensions,
+                                        color_column="Utility",
+                                    )
+                                    st.write("### Parallel Coordinate Plot")
+                                    st.plotly_chart(parallel_fig)
+                                else:
+                                    st.error("Parallel Coordinate Plot requires at least two target columns.")
+
+                
                   
 
                         # Add a download button for predictions

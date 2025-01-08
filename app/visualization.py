@@ -5,7 +5,7 @@ import plotly.express as px
 import pandas as pd
 
 # Scatter plot
-def plot_scatter_matrix(result_df, target_columns, utility_scores):
+def plot_scatter_matrix_with_uncertainty(result_df, target_columns, utility_scores, uncertainty_columns=None):
     scatter_data = result_df[target_columns + ["Utility"]].copy()
     scatter_data["Utility"] = utility_scores
 
@@ -18,30 +18,24 @@ def plot_scatter_matrix(result_df, target_columns, utility_scores):
         labels={col: col for col in target_columns},
     )
     fig.update_traces(diagonal_visible=False)
+
+    # Add error bars for uncertainties
+    if uncertainty_columns:
+        for dim, uncertainty_col in zip(target_columns, uncertainty_columns):
+            fig.add_scatter(
+                x=scatter_data[dim],
+                y=scatter_data["Utility"],
+                error_x=scatter_data[uncertainty_col],
+                mode="markers",
+                marker=dict(color="gray", opacity=0.5),
+            )
+
     return fig
 
 
 
-def create_tsne_plot(data, features, utility_col="Utility", perplexity=20, learning_rate=200):
-    """
-    Create a t-SNE plot for the dataset.
 
-    Args:
-        data (pd.DataFrame): The dataset with features and utility.
-        features (list): The list of feature column names.
-        utility_col (str): Column name representing utility scores.
-        perplexity (int): Perplexity parameter for t-SNE.
-        learning_rate (int): Learning rate for t-SNE optimization.
-
-    Returns:
-        plotly.graph_objects.Figure: A scatter plot in t-SNE space.
-    """
-    if len(features) == 0:
-        raise ValueError("No features selected for t-SNE.")
-
-    if utility_col not in data.columns:
-        raise ValueError(f"The column '{utility_col}' is not in the dataset.")
-
+def create_tsne_plot_with_hover(data, features, utility_col="Utility", hover_columns=None, perplexity=20, learning_rate=200):
     tsne = TSNE(
         n_components=2,
         perplexity=min(perplexity, len(data) - 1),
@@ -51,17 +45,17 @@ def create_tsne_plot(data, features, utility_col="Utility", perplexity=20, learn
         learning_rate=learning_rate,
     )
 
-    # Fit t-SNE on the selected feature columns
     tsne_result = tsne.fit_transform(data[features])
 
-    # Create a dataframe with t-SNE results
     tsne_result_df = pd.DataFrame({
         "t-SNE-1": tsne_result[:, 0],
         "t-SNE-2": tsne_result[:, 1],
         utility_col: data[utility_col].values,
     })
+    if hover_columns:
+        for col in hover_columns:
+            tsne_result_df[col] = data[col].values
 
-    # Generate scatter plot
     fig = px.scatter(
         tsne_result_df,
         x="t-SNE-1",
@@ -70,6 +64,7 @@ def create_tsne_plot(data, features, utility_col="Utility", perplexity=20, learn
         title="t-SNE Visualization of Data",
         labels={"t-SNE-1": "t-SNE Dimension 1", "t-SNE-2": "t-SNE Dimension 2"},
         color_continuous_scale="Viridis",
+        hover_data=hover_columns,
     )
 
     fig.update_traces(marker=dict(size=7))

@@ -117,4 +117,3 @@ def calculate_uncertainty(model, inputs, num_perturbations=50, noise_scale=0.5):
         perturbations.append(perturbed_prediction)
     perturbations = np.stack(perturbations, axis=0)
     return perturbations.std(axis=0).mean(axis=1, keepdims=True)
-
