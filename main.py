@@ -50,7 +50,7 @@ st.markdown("Optimize material properties using advanced meta-learning technique
 with st.sidebar.expander("Model Selection", expanded=True):  # Expanded by default
     model_type = st.selectbox(
         "Choose Model Type:",
-        ["MAML", "Reptile"],  # Add available models here
+        ["Reptile", "MAML"],  # Add available models here
         help="Select the model type to use for material mix design."
     )
 
@@ -644,19 +644,24 @@ if uploaded_file:
                                     except Exception as e:
                                         st.error(f"An error occurred while generating the Scatter Matrix: {str(e)}")
 
-
+                            # Plot Generation Logic
                             elif selected_option == "t-SNE Plot":
                                 if "Utility" in st.session_state.result_df.columns and len(input_columns) > 0:
-                                    tsne_features = input_columns
-                                    tsne_fig = create_tsne_plot_with_hover(
-                                        data=st.session_state.result_df,
-                                        features=tsne_features,
-                                        utility_col="Utility",
-                                    )
-                                    st.write("### t-SNE Plot")
-                                    st.plotly_chart(tsne_fig)
+                                    try:
+                                        tsne_plot = create_tsne_plot_with_hover(
+                                            data=st.session_state.result_df,  # DataFrame containing the data
+                                            feature_cols=input_columns,      # List of feature columns for t-SNE
+                                            utility_col="Utility",           # Column name for coloring by utility
+                                            row_number_col="Idx_Sample"      # Column name for hover labels
+                                        )
+                                        st.write("### t-SNE Plot")
+                                        st.plotly_chart(tsne_plot)
+                                    except Exception as e:
+                                        st.error(f"An error occurred while generating the t-SNE plot: {str(e)}")
                                 else:
                                     st.error("Ensure the dataset has utility scores and selected input features.")
+
+                      
 
                             elif selected_option == "3D Scatter Plot":
                                 if len(target_columns) >= 2:
@@ -853,14 +858,17 @@ if uploaded_file:
 
                             elif selected_option == "t-SNE Plot":
                                 if "Utility" in st.session_state.result_df.columns and len(input_columns) > 0:
-                                    tsne_features = input_columns
-                                    tsne_fig = create_tsne_plot_with_hover(
-                                        data=st.session_state.result_df,
-                                        features=tsne_features,
-                                        utility_col="Utility",
-                                    )
-                                    st.write("### t-SNE Plot")
-                                    st.plotly_chart(tsne_fig)
+                                    try:
+                                        tsne_plot = create_tsne_plot_with_hover(
+                                            data=st.session_state.result_df,  # DataFrame containing the data
+                                            feature_cols=input_columns,      # List of feature columns for t-SNE
+                                            utility_col="Utility",           # Column name for coloring by utility
+                                            row_number_col="Idx_Sample"      # Column name for hover labels
+                                        )
+                                        st.write("### t-SNE Plot")
+                                        st.plotly_chart(tsne_plot)
+                                    except Exception as e:
+                                        st.error(f"An error occurred while generating the t-SNE plot: {str(e)}")
                                 else:
                                     st.error("Ensure the dataset has utility scores and selected input features.")
 

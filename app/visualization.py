@@ -35,40 +35,68 @@ def plot_scatter_matrix_with_uncertainty(result_df, target_columns, utility_scor
 
 
 
-def create_tsne_plot_with_hover(data, features, utility_col="Utility", hover_columns=None, perplexity=20, learning_rate=200):
+def create_tsne_plot_with_hover(data, feature_cols, utility_col, row_number_col, label_col=None):
+    """
+    Generates a t-SNE plot with custom hover labels.
+
+    Args:
+        data (DataFrame): Data for t-SNE computation.
+        feature_cols (list): Columns to use for t-SNE embeddings.
+        utility_col (str): Column name for coloring by utility.
+        row_number_col (str): Column name for hover labels (e.g., "Idx_Sample").
+        label_col (str): Optional column for labeling (e.g., 'Labeled').
+
+    Returns:
+        Figure: Plotly scatter plot with t-SNE results.
+    """
+    # Normalize features for t-SNE
+    feature_df = data[feature_cols].copy()
+    feature_std = feature_df.std().replace(0, 1)
+    feature_mean = feature_df.mean()
+    normalized_features = (feature_df - feature_mean) / feature_std
+
+    # Run t-SNE
     tsne = TSNE(
         n_components=2,
-        perplexity=min(perplexity, len(data) - 1),
+        perplexity=30,  # Adjust if needed
+        learning_rate=200,
         n_iter=350,
         random_state=42,
         init="pca",
-        learning_rate=learning_rate,
     )
+    tsne_result = tsne.fit_transform(normalized_features)
 
-    tsne_result = tsne.fit_transform(data[features])
-
+    # Create t-SNE result DataFrame
     tsne_result_df = pd.DataFrame({
+        "Row number": data[row_number_col],
         "t-SNE-1": tsne_result[:, 0],
         "t-SNE-2": tsne_result[:, 1],
-        utility_col: data[utility_col].values,
+        utility_col: data[utility_col],
     })
-    if hover_columns:
-        for col in hover_columns:
-            tsne_result_df[col] = data[col].values
 
+    if label_col:
+        tsne_result_df[label_col] = data[label_col]
+
+    # Generate Plotly Scatter Plot
     fig = px.scatter(
         tsne_result_df,
         x="t-SNE-1",
         y="t-SNE-2",
         color=utility_col,
-        title="t-SNE Visualization of Data",
-        labels={"t-SNE-1": "t-SNE Dimension 1", "t-SNE-2": "t-SNE Dimension 2"},
-        color_continuous_scale="Viridis",
-        hover_data=hover_columns,
+        symbol=label_col if label_col else None,
+        custom_data=["Row number"],
+        title="Materials data in t-SNE coordinates",
+        render_mode="svg",
     )
-
-    fig.update_traces(marker=dict(size=7))
-    fig.update_layout(height=800, legend_title_text="Utility")
+    fig.update_traces(
+        hovertemplate="Row number: %{customdata}, Utility: %{marker.color:.2f}",
+        marker=dict(size=7),
+    )
+    fig.update_layout(
+        height=1000,
+        legend_title_text="",
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
+    )
     return fig
 
 
@@ -154,4 +182,42 @@ def create_3d_scatter(result_df, x_column, y_column, z_column, color_column):
         width=1200,   # Increased width
         margin=dict(l=0, r=0, t=50, b=0)  # Adjusted margins
     )
+    return fig
+
+
+
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import numpy as np
+
+def create_scatter_matrix_with_hover(data, dimensions, utility_col, idx_col):
+    matrix_size = len(dimensions)
+    fig = make_subplots(
+        rows=matrix_size - 1, cols=matrix_size - 1,
+        shared_xaxes=True, shared_yaxes=True,
+        horizontal_spacing=0.01, vertical_spacing=0.01
+    )
+    
+    # Add scatter plots in lower triangle
+    for i in range(1, matrix_size):
+        for j in range(i):
+            fig.add_trace(
+                go.Scatter(
+                    x=data[dimensions[j]],
+                    y=data[dimensions[i]],
+                    mode='markers',
+                    marker=dict(
+                        size=7,
+                        color=data[utility_col],
+                        colorscale='Plasma',
+                        showscale=(i == 1 and j == 0),  # Show color bar on the first subplot
+                        colorbar=dict(title='Utility')
+                    ),
+                    customdata=data[idx_col],  # Sample indices or other metadata
+                    hovertemplate="Idx: %{customdata}<br>%{x:.2f}, %{y:.2f}<br>Utility: %{marker.color:.2f}"
+                ),
+                row=i, col=j + 1
+            )
+    
+    fig.update_layout(height=800, title="Scatter Matrix with Utility")
     return fig
