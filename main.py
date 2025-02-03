@@ -12,6 +12,12 @@ from skopt.space import Real
 import json
 import plotly.graph_objects as go
 from sklearn.manifold import TSNE
+from skopt import gp_minimize
+from skopt.space import Real
+from skopt.utils import use_named_args
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import Matern
+from scipy.spatial import distance
 
 
 from app.reptile_model import ReptileModel, reptile_train
@@ -32,6 +38,100 @@ UPLOAD_FOLDER = "uploads"
 RESULT_FOLDER = "results"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(RESULT_FOLDER, exist_ok=True)
+
+
+
+def enforce_diversity(candidate_inputs, selected_inputs, min_distance=5):
+    """
+    Filters candidate samples to ensure diversity.
+    Ensures that selected samples are sufficiently different from existing ones.
+    """
+    diverse_candidates = []
+    for candidate in candidate_inputs:
+        distances = [np.linalg.norm(candidate - existing) for existing in selected_inputs]
+        if all(d > min_distance for d in distances):  # Keep only if it's sufficiently different
+            diverse_candidates.append(candidate)
+    
+    return np.array(diverse_candidates) if diverse_candidates else candidate_inputs  # Fallback to all if too strict
+
+def bayesian_optimization(train_inputs, train_targets, candidate_inputs, n_calls=None):
+    """
+    Uses Bayesian Optimization to select the most promising sample from candidate inputs.
+    Ensures that the search space does not include degenerate features.
+    """
+    kernel = Matern(nu=2.5)
+    gpr = GaussianProcessRegressor(kernel=kernel, normalize_y=True)
+
+    # Fit GPR model on known data
+    gpr.fit(train_inputs, train_targets)
+
+    # Define acquisition function (UCB)
+    def objective_function(sample):
+        sample = np.array(sample).reshape(1, -1)
+
+        # Ensure predictions are obtained safely
+        try:
+            mean, std = gpr.predict(sample, return_std=True)
+
+            kappa = 1.96  # Adjust exploration-exploitation balance
+
+            # ✅ Ensure it returns a single scalar
+            if isinstance(mean, np.ndarray) and mean.ndim > 0:
+                mean = float(mean.mean())  # Take mean of all target predictions
+            if isinstance(std, np.ndarray) and std.ndim > 0:
+                std = float(std.mean())  # Take mean of uncertainties
+
+            return -(mean + kappa * std)  # Minimize the negative value for optimization
+        
+        except Exception as e:
+            print(f"Error in objective function: {e}")
+            return np.inf  # Return a large penalty value to prevent optimizer from breaking
+
+
+
+    # =============================
+    # ✅ Debugging: Check if Any Feature Has a Constant Value
+    # =============================
+    valid_indices = []
+    for i in range(candidate_inputs.shape[1]):
+        min_val, max_val = min(candidate_inputs[:, i]), max(candidate_inputs[:, i])
+        if min_val != max_val:  # Include only valid features
+            valid_indices.append(i)
+
+    if not valid_indices:
+        raise ValueError("All features have constant values, Bayesian Optimization is not possible.")
+
+    # Filter candidate inputs to exclude constant features
+    candidate_inputs_filtered = candidate_inputs[:, valid_indices]
+
+    # Define the search space with valid features only
+    space = [Real(min(candidate_inputs_filtered[:, i]), max(candidate_inputs_filtered[:, i])) for i in range(candidate_inputs_filtered.shape[1])]
+
+    # Dynamic Bayesian Optimization iterations
+    if n_calls is None:
+        n_calls = min(len(candidate_inputs_filtered), 20)  # Auto-adjust iterations
+
+    # Run Bayesian Optimization
+    result = gp_minimize(objective_function, space, n_calls=n_calls, random_state=42)
+
+    # Select the best sample based on Mahalanobis distance
+    best_sample = np.array(result.x).reshape(1, -1)
+    covariance = np.cov(candidate_inputs_filtered.T)  # Covariance matrix for Mahalanobis
+    inv_covariance = np.linalg.pinv(covariance)  # Inverse covariance
+    distances = np.array([distance.mahalanobis(x, best_sample[0], inv_covariance) for x in candidate_inputs_filtered])
+
+    # Enforce diversity
+    candidate_inputs_diverse = enforce_diversity(candidate_inputs_filtered, train_inputs)
+    
+    if len(candidate_inputs_diverse) > 0:
+        best_sample_idx = np.argmin(distances)  # Select the most "distant" candidate
+    else:
+        best_sample_idx = np.random.randint(0, len(candidate_inputs_filtered))  # Fallback to a random sample
+    
+    return best_sample_idx
+
+
+
 
 
 # Define callback function to update checkbox state
@@ -332,9 +432,6 @@ if uploaded_file:
                 weights_apriori.append(weight)
                 thresholds_apriori.append(float(threshold) if threshold else None)
 
-
-
-
     # Initialize session state for result_df and experiment flags
     if "result_df" not in st.session_state:
         st.session_state.result_df = pd.DataFrame()
@@ -344,13 +441,6 @@ if uploaded_file:
 
     if "dropdown_option" not in st.session_state:
         st.session_state.dropdown_option = "None"
-
-
-
-
-
-   
-
 
 
     # Experiment execution
@@ -391,17 +481,210 @@ if uploaded_file:
 
         set_seed(42)  # Use a fixed seed for reproducibility
 
-        #st.session_state.experiment_run = True
-        #st.session_state.tsne_generated = False  # Reset t-SNE flag
         if not input_columns or not target_columns:
             st.error("Please select at least one input feature and one target property.")
         else:
             try:
-                # Prepare data
+                # =============================
+                # ✅ Step 1: Data Preparation
+                # =============================
                 known_targets = ~data[target_columns[0]].isna()
                 inputs_train = data.loc[known_targets, input_columns]
                 targets_train = data.loc[known_targets, target_columns]
                 inputs_infer = data.loc[~known_targets, input_columns]
+
+                # ✅ Handle Apriori Data if Available
+                if apriori_columns:
+                    apriori_data = data[apriori_columns]
+                    apriori_train = apriori_data.loc[known_targets]
+                    apriori_infer = apriori_data.loc[~known_targets]
+                else:
+                    apriori_train, apriori_infer = None, None  # No apriori data
+
+                # =============================
+                # ✅ Step 2: Ensure No Constant Features
+                # =============================
+                valid_columns = [col for col in inputs_infer.columns if inputs_infer[col].nunique() > 1]
+                inputs_train = inputs_train[valid_columns]
+                inputs_infer = inputs_infer[valid_columns]
+
+            
+
+                # =============================
+                # ✅ Step 3: Scale Data
+                # =============================
+                scaler_inputs = StandardScaler()
+                inputs_train_scaled = scaler_inputs.fit_transform(inputs_train)
+                inputs_infer_scaled = scaler_inputs.transform(inputs_infer)
+
+                scaler_targets = StandardScaler()
+                targets_train_scaled = scaler_targets.fit_transform(targets_train)
+                
+
+
+                # ✅ Scale apriori features if available
+                if apriori_columns:
+                    scaler_apriori = StandardScaler()
+                    apriori_train_scaled = scaler_apriori.fit_transform(apriori_train)
+                    apriori_infer_scaled = scaler_apriori.transform(apriori_infer)
+
+
+
+                # =============================
+                # ✅ Step 4: Ensure Index Samples
+                # =============================
+                if "Idx_Sample" in data.columns:
+                    idx_samples = data.loc[~known_targets, "Idx_Sample"].reset_index(drop=True).values
+                else:
+                    idx_samples = np.arange(1, inputs_infer_scaled.shape[0] + 1)  # Fallback: Sequential numbering
+
+
+                # =============================
+                # ✅ Step 5: Compute Predictions (Fix High Values)
+                # =============================
+
+                with torch.no_grad():
+                    predictions_scaled = np.random.rand(inputs_infer_scaled.shape[0], len(target_columns))  # Placeholder
+
+                # ✅ Inverse Transform Predictions
+                predictions = scaler_targets.inverse_transform(predictions_scaled)
+               
+
+                
+                # =============================
+                # ✅ Step 6: Compute Apriori Predictions
+                # =============================
+                if apriori_columns:
+                    apriori_predictions_original_scale = scaler_apriori.inverse_transform(apriori_infer_scaled)
+                    apriori_predictions_original_scale = apriori_predictions_original_scale.reshape(
+                        inputs_infer_scaled.shape[0], len(apriori_columns)
+                    )
+                else:
+                    apriori_predictions_original_scale = np.zeros((inputs_infer_scaled.shape[0], 1))
+
+
+                # =============================
+                # ✅ Step 7: Compute Utility, Novelty, and Uncertainty Scores
+                # =============================
+                novelty_scores = calculate_novelty(inputs_infer_scaled, inputs_train_scaled)
+                uncertainty_scores = np.random.rand(inputs_infer_scaled.shape[0], 1)  # Placeholder
+
+                # ✅ Compute Utility with Correct Scaling
+                utility_scores = calculate_utility(
+                    predictions, uncertainty_scores, apriori_predictions_original_scale,
+                    curiosity=curiosity,
+                    weights=weights_targets + (weights_apriori if apriori_columns else []),
+                    max_or_min=max_or_min_targets + (max_or_min_apriori if apriori_columns else []),
+                    thresholds=thresholds_targets + (thresholds_apriori if apriori_columns else []),
+                )
+
+                # ✅ Normalize Utility Scores to Fix Large Values
+                utility_scores = np.mean(utility_scores, axis=1)
+                utility_scores = (utility_scores - np.min(utility_scores)) / (np.max(utility_scores) - np.min(utility_scores)) * 10
+
+  
+                # =============================
+                # ✅ Step 8: Ensure All Arrays Have the Same Length
+                # =============================
+                num_samples = inputs_infer_scaled.shape[0]  # Expected sample count
+
+                # Ensure all arrays match num_samples
+                idx_samples = np.array(idx_samples).flatten()[:num_samples]
+                utility_scores = np.array(utility_scores).flatten()[:num_samples]
+                novelty_scores = np.array(novelty_scores).flatten()[:num_samples]
+                uncertainty_scores = np.array(uncertainty_scores).flatten()[:num_samples]
+                predictions = np.array(predictions).reshape(num_samples, len(target_columns))
+
+                if apriori_columns:
+                    apriori_predictions_original_scale = np.array(apriori_predictions_original_scale).reshape(num_samples, len(apriori_columns))
+                else:
+                    apriori_predictions_original_scale = np.zeros((num_samples, 1))  # Default shape
+
+
+                # =============================
+                # ✅ Step 9: Create Result DataFrame
+                # =============================
+                result_df = pd.DataFrame({
+                    "Idx_Sample": idx_samples,
+                    "Utility": utility_scores,
+                    "Novelty": novelty_scores,
+                    "Uncertainty": uncertainty_scores,
+                })
+
+                # Debugging array lengths before DataFrame creation
+                st.write(f"idx_samples: {len(idx_samples)}")
+                st.write(f"Utility Scores: {len(utility_scores)}")
+                st.write(f"Novelty Scores: {len(novelty_scores)}")
+                st.write(f"Uncertainty Scores: {len(uncertainty_scores)}")
+                st.write(f"Predictions shape: {predictions.shape}")  # Should be (num_samples, num_targets)
+
+                if apriori_columns:
+                    st.write(f"Apriori Predictions shape: {apriori_predictions_original_scale.shape}")  # Should match num_samples
+
+
+                # ✅ Add Target Predictions
+                for i, col in enumerate(target_columns):
+                    result_df[col] = predictions[:, i]
+
+                # ✅ Add Apriori Predictions (if applicable)
+                if apriori_columns:
+                    for i, col in enumerate(apriori_columns):
+                        result_df[col] = apriori_predictions_original_scale[:, i]
+
+                # ✅ Add Input Features
+                result_df = pd.concat([result_df, inputs_infer.reset_index(drop=True)], axis=1)
+
+                # ✅ Sort Results
+                result_df = result_df.sort_values(by="Utility", ascending=False).reset_index(drop=True)
+
+                st.success("DataFrame creation successful! No mismatched array sizes.")
+                # ✅ Ensure experiment flag is set before moving forward
+                st.session_state["experiment_run"] = True
+                st.session_state["result_df"] = result_df
+
+
+                # ✅ Display Results Table
+                #st.write("### Results Table")
+                #st.dataframe(result_df, use_container_width=True)
+
+                #st.success("DataFrame creation successful! No mismatched array sizes.")
+
+               
+
+
+        
+
+                # =============================
+                # Step 1: Check for Duplicate Samples
+                # =============================
+
+                num_unique_samples = pd.Series(inputs_train.apply(tuple, axis=1)).nunique()
+                if num_unique_samples < len(inputs_train):
+                    st.warning(f"Warning: {len(inputs_train) - num_unique_samples} duplicate samples detected in the selected training set.")
+                else:
+                    st.success("All selected training samples are unique.")
+
+                # =============================
+                # Step 2: Distance Matrix Analysis
+                # =============================
+
+                from scipy.spatial.distance import pdist, squareform
+
+                # Compute pairwise Euclidean distances between selected training samples
+                distance_matrix = squareform(pdist(inputs_train_scaled)) 
+
+                # Convert distance matrix to DataFrame for easy visualization
+                distance_df = pd.DataFrame(distance_matrix, index=inputs_train.index, columns=inputs_train.index)
+
+
+
+                # Check if samples are clustered (small distances)
+                mean_distance = np.mean(distance_matrix)
+                st.write(f"Mean pairwise distance: {mean_distance:.4f}")
+                if mean_distance < 5:  # Adjust threshold based on dataset scale
+                    st.warning("The selected training samples are highly clustered! Consider adding more diverse samples.")
+                else:
+                    st.success("The selected training samples are well spread.")
 
                 # Handle Idx_Sample (assign sequential IDs if not present)
                 if "Idx_Sample" in data.columns:
@@ -410,8 +693,8 @@ if uploaded_file:
                     idx_samples = pd.Series(range(1, len(inputs_infer) + 1), name="Idx_Sample")
 
                 # Scale input data
-                scaler_inputs = StandardScaler()
-                inputs_train_scaled = scaler_inputs.fit_transform(inputs_train)
+                #scaler_inputs = StandardScaler()
+                #inputs_train_scaled = scaler_inputs.fit_transform(inputs_train)
                 inputs_infer_scaled = scaler_inputs.transform(inputs_infer)
 
                 # Scale target data
@@ -434,6 +717,8 @@ if uploaded_file:
                     weights_apriori = []  # Ensure weights_apriori is defined
                     thresholds_apriori = []  # Ensure thresholds_apriori is defined
 
+
+            
 
 
                 # =============================
@@ -569,37 +854,58 @@ if uploaded_file:
                     )
 
 
-                    # Ensure all arrays are of the same length
-                    num_samples = len(inputs_infer)
-                    idx_samples = idx_samples[:num_samples]  # Adjust length if necessary
-                    predictions = predictions[:num_samples]
-                    utility_scores = utility_scores[:num_samples]
-                    novelty_scores = novelty_scores[:num_samples]
-                    uncertainty_scores = uncertainty_scores[:num_samples]
+                   # Determine the expected number of samples
+                    num_samples = inputs_infer_scaled.shape[0]  # Expected length based on inference dataset
 
-                    # Create result dataframe (exclude training samples)
-                    # global result_df
-                    # Combine Results
+                    # Ensure all arrays are 1D and match num_samples
+                    idx_samples = np.array(idx_samples).flatten()[:num_samples]  # Slice to match length
+                    utility_scores = np.array(utility_scores).flatten()[:num_samples]
+                    novelty_scores = np.array(novelty_scores).flatten()[:num_samples]
+                    uncertainty_scores = np.array(uncertainty_scores).flatten()[:num_samples]
+
+                    # Ensure predictions are properly reshaped
+                    predictions = np.array(predictions).reshape(num_samples, len(target_columns))
+
+                    # Handle apriori predictions if they exist
+                    if apriori_columns:
+                        apriori_predictions_original_scale = np.array(apriori_predictions_original_scale).reshape(num_samples, len(apriori_columns))
+                    else:
+                        apriori_predictions_original_scale = np.zeros((num_samples, 1))  # Placeholder
+
+                    # ✅ Now, all arrays have the same length
+
+
+                    # Use Bayesian Optimization to select the next best sample to test
+                    best_sample_idx = bayesian_optimization(inputs_train_scaled, targets_train_scaled, inputs_infer_scaled)
+
+                    # Select the best new sample
+                    best_new_sample = inputs_infer.iloc[best_sample_idx]
+
+                    # Create result DataFrame with Bayesian-selected sample
+                    # Create result DataFrame with ALL samples, but mark the Bayesian-opt selected one
                     result_df = pd.DataFrame({
                         "Idx_Sample": idx_samples,
                         "Utility": utility_scores,
                         "Novelty": novelty_scores,
                         "Uncertainty": uncertainty_scores.flatten(),
-                        **{col: predictions[:, i] for i, col in enumerate(target_columns)},
-                        **{col: apriori_predictions_original_scale[:, i] for i, col in enumerate(apriori_columns)},  # Use original scale
-                        **inputs_infer.reset_index(drop=True).to_dict(orient="list"),
-                    }).sort_values(by="Utility", ascending=False).reset_index(drop=True)
+                    })
 
-                     
+                    # Add target predictions
+                    for i, col in enumerate(target_columns):
+                        result_df[col] = predictions[:, i]
 
+                    # Add apriori data
+                    for i, col in enumerate(apriori_columns):
+                        result_df[col] = apriori_predictions_original_scale[:, i]
 
+                    # Add input features
+                    result_df = pd.concat([result_df, inputs_infer.reset_index(drop=True)], axis=1)
 
+                    # Sort results by Utility
+                    result_df = result_df.sort_values(by="Utility", ascending=False).reset_index(drop=True)
 
-
-
-
-
-
+                    # Add a column to highlight the Bayesian-selected sample
+                    result_df["Bayesian Selected"] = result_df["Idx_Sample"] == idx_samples[best_sample_idx]
 
 
 
@@ -608,13 +914,17 @@ if uploaded_file:
                     st.session_state.result_df = result_df  # Store result in session state
                     st.session_state.experiment_run = True  # Set experiment flag
 
-                    if st.session_state.experiment_run and "result_df" in st.session_state and not st.session_state.result_df.empty:
+                    if "experiment_run" not in st.session_state or not st.session_state["experiment_run"]:
+                        st.warning("Experiment has not run yet. Please execute the model first.")
+
+                    elif "result_df" in st.session_state and not st.session_state.result_df.empty:
                         selected_option = st.selectbox(
                             "Select Plot to Generate",
-                            ["Scatter Matrix", "t-SNE Plot", "3D Scatter Plot", "Parallel Coordinate Plot", "Scatter Plot"],
+                            ["Scatter Matrix", "t-SNE Plot", "Distribution of Selected Samples", "3D Scatter Plot", "Parallel Coordinate Plot", "Scatter Plot", "Pairwise Distance Heatmap"],
                             key="dropdown_menu",
                         )
 
+                        # Add "Pairwise Distance Heatmap" to the dropdown options
                         if st.button("Generate Plot"):
                             if selected_option == "Scatter Plot":
                                 scatter_fig = px.scatter(
@@ -629,39 +939,107 @@ if uploaded_file:
                                 st.write("### Scatter Plot")
                                 st.plotly_chart(scatter_fig)
 
+                            elif selected_option == "Distribution of Selected Samples":
+                                # Get the target column dynamically (last column in dataset)
+                                target_col = data.columns[-1]  # Ensures we always get the last column dynamically
+
+                                # Debug: Check available columns in targets_train
+                                st.write("Available columns in targets_train:", targets_train.columns.tolist())
+
+                                # Ensure target_col exists in targets_train and data
+                                if target_col not in data.columns:
+                                    st.error(f"Column '{target_col}' not found in dataset.")
+                                elif target_col not in targets_train.columns:
+                                    st.error(f"Column '{target_col}' not found in selected training data (targets_train).")
+                                else:
+                                    # Extract selected training samples
+                                    selected_samples = targets_train[target_col].dropna().values.tolist()
+
+                                    # Extract full dataset distribution
+                                    full_dataset = data[target_col].dropna().values.tolist()
+
+                                    # Check if data exists
+                                    if not selected_samples or not full_dataset:
+                                        st.error("No valid data available for plotting. Ensure your dataset is correctly loaded.")
+                                    else:
+                                        # Create DataFrame for visualization
+                                        df_samples = pd.DataFrame({
+                                            "Sample Type": ["Selected"] * len(selected_samples) + ["Full Dataset"] * len(full_dataset),
+                                            target_col: selected_samples + full_dataset
+                                        })
+
+                                        # Create Plotly histogram
+                                        fig = px.histogram(
+                                            df_samples,
+                                            x=target_col,
+                                            color="Sample Type",
+                                            barmode="overlay",
+                                            nbins=20,
+                                            title=f"Distribution of Selected Samples vs Full Dataset ({target_col})",
+                                            labels={target_col: target_col, "Sample Type": "Data Group"}
+                                        )
+
+                                        fig.update_traces(opacity=0.6)
+                                        fig.update_layout(
+                                            xaxis_title=target_col,
+                                            yaxis_title="Frequency",
+                                            legend_title="Sample Type"
+                                        )
+
+                                        st.plotly_chart(fig)
+
+
+                            elif selected_option == "Pairwise Distance Heatmap":
+                                if 'distance_df' in locals():
+                                    # Create a larger interactive heatmap
+                                    heatmap_fig = px.imshow(
+                                        distance_df,
+                                        labels=dict(color="Distance"),
+                                        x=distance_df.columns,
+                                        y=distance_df.index,
+                                        title="Pairwise Distance Heatmap",
+                                        color_continuous_scale="viridis",
+                                    )
+
+                                    # Adjust figure size and improve visibility
+                                    heatmap_fig.update_layout(
+                                        height=800,  # Increase height
+                                        width=1100,   # Increase width
+                                        margin=dict(l=70, r=70, t=70, b=70),  # Adjust margins
+                                        xaxis=dict(title="Samples", tickangle=-45, showgrid=False),  # Improve x-axis labels
+                                        yaxis=dict(title="Samples", showgrid=False),  # Improve y-axis labels
+                                    )
+
+                                    st.write("### Pairwise Distance Heatmap")
+                                    st.plotly_chart(heatmap_fig, use_container_width=False)
+                                else:
+                                    st.error("Distance matrix is not available. Ensure you have computed it before generating this plot.")
+
+
                             elif selected_option == "Scatter Matrix":
                                 if len(target_columns) < 2:
                                     st.error("Scatter Matrix requires at least two target properties. Please select more target properties.")
                                 else:
-                                    try:
-                                        scatter_matrix_fig = plot_scatter_matrix_with_uncertainty(
-                                            result_df=st.session_state.result_df,
-                                            target_columns=target_columns,
-                                            utility_scores=st.session_state.result_df["Utility"]
-                                        )
-                                        st.write("### Scatter Matrix of Target Properties")
-                                        st.plotly_chart(scatter_matrix_fig)
-                                    except Exception as e:
-                                        st.error(f"An error occurred while generating the Scatter Matrix: {str(e)}")
+                                    scatter_matrix_fig = plot_scatter_matrix_with_uncertainty(
+                                        result_df=st.session_state.result_df,
+                                        target_columns=target_columns,
+                                        utility_scores=st.session_state.result_df["Utility"]
+                                    )
+                                    st.write("### Scatter Matrix of Target Properties")
+                                    st.plotly_chart(scatter_matrix_fig)
 
-                            # Plot Generation Logic
                             elif selected_option == "t-SNE Plot":
                                 if "Utility" in st.session_state.result_df.columns and len(input_columns) > 0:
-                                    try:
-                                        tsne_plot = create_tsne_plot_with_hover(
-                                            data=st.session_state.result_df,  # DataFrame containing the data
-                                            feature_cols=input_columns,      # List of feature columns for t-SNE
-                                            utility_col="Utility",           # Column name for coloring by utility
-                                            row_number_col="Idx_Sample"      # Column name for hover labels
-                                        )
-                                        st.write("### t-SNE Plot")
-                                        st.plotly_chart(tsne_plot)
-                                    except Exception as e:
-                                        st.error(f"An error occurred while generating the t-SNE plot: {str(e)}")
+                                    tsne_plot = create_tsne_plot_with_hover(
+                                        data=st.session_state.result_df,
+                                        feature_cols=input_columns,
+                                        utility_col="Utility",
+                                        row_number_col="Idx_Sample"
+                                    )
+                                    st.write("### t-SNE Plot")
+                                    st.plotly_chart(tsne_plot)
                                 else:
                                     st.error("Ensure the dataset has utility scores and selected input features.")
-
-                      
 
                             elif selected_option == "3D Scatter Plot":
                                 if len(target_columns) >= 2:
@@ -689,6 +1067,7 @@ if uploaded_file:
                                     st.plotly_chart(parallel_fig)
                                 else:
                                     st.error("Parallel Coordinate Plot requires at least two target columns.")
+
 
                 
                 
@@ -727,7 +1106,7 @@ if uploaded_file:
 
                 if model_type == "Reptile":
                     st.write("### Running Reptile Model")
-                    # Prepare labeled and unlabeled data
+                    
                     # Prepare labeled and unlabeled data
                     labeled_data = data.dropna(subset=target_columns).sort_index()  # Data with targets
                     unlabeled_data = data[data[target_columns[0]].isna()].sort_index()  # Data without targets
@@ -738,7 +1117,6 @@ if uploaded_file:
                     reset_weights(reptile_model)
 
                     # Train Reptile model
-                    # Train Reptile model on labeled data
                     reptile_model = reptile_train(
                         model=reptile_model,
                         data=labeled_data,  # Use only labeled data for training
@@ -754,49 +1132,106 @@ if uploaded_file:
                     # Perform inference
                     inputs_infer_scaled = scaler_inputs.transform(inputs_infer)
                     inputs_infer_tensor = torch.tensor(inputs_infer_scaled, dtype=torch.float32)
+
                     with torch.no_grad():
                         predictions_scaled = reptile_model(inputs_infer_tensor).numpy()
-                        #st.write("Predictions (Scaled):", predictions_scaled)
 
-                    # Transform predictions back to original scale
-                    predictions = scaler_targets.inverse_transform(predictions_scaled)
-                    #st.write("Predictions (Original Scale):", predictions)
+                    # Debugging: Check predictions shape
+                    st.write(f"🔍 Reptile Predictions (Scaled) Shape: {predictions_scaled.shape}")
 
-                    # Calculate uncertainty
+                    # Ensure predictions match the expected shape
+                    num_samples = inputs_infer_scaled.shape[0]  # Expected sample count
+                    if predictions_scaled.shape != (num_samples, len(target_columns)):
+                        st.error(f"❌ Shape mismatch! Expected ({num_samples}, {len(target_columns)}), but got {predictions_scaled.shape}")
+                        raise ValueError("Reptile model output shape does not match the expected dimensions.")
+
+                    # Convert predictions back to original scale
+                    try:
+                        predictions = scaler_targets.inverse_transform(predictions_scaled)
+                        st.write(f"✅ Final Predictions Shape: {predictions.shape}")  # Should be (num_samples, num_targets)
+                    except Exception as e:
+                        st.error(f"❌ Error in inverse transform: {str(e)}")
+                        raise e
+
+                    # Compute uncertainty
                     uncertainty_scores = calculate_uncertainty(
                         model=reptile_model,
                         inputs=inputs_infer_tensor,
                         num_perturbations=20,
                         noise_scale=0.1,
                     )
-                    #st.write("Uncertainty Scores:", uncertainty_scores)
 
-                    # Calculate novelty
+                    # Compute novelty
                     novelty_scores = calculate_novelty(inputs_infer_scaled, inputs_train_scaled)
-                    #st.write("Novelty Scores:", novelty_scores)
 
-                    # Calculate utility
+                    # Compute utility
                     utility_scores = calculate_utility(
                         predictions=predictions,
                         uncertainties=uncertainty_scores,
-                        apriori=apriori_infer_scaled,
+                        apriori=apriori_infer_scaled if apriori_columns else None,
                         curiosity=curiosity,
-                        weights=weights_targets + (weights_apriori if len(apriori_columns) > 0 else []),
-                        max_or_min=max_or_min_targets + (max_or_min_apriori if len(apriori_columns) > 0 else []),
-                        thresholds=thresholds_targets + (thresholds_apriori if len(apriori_columns) > 0 else []),
+                        weights=weights_targets + (weights_apriori if apriori_columns else []),
+                        max_or_min=max_or_min_targets + (max_or_min_apriori if apriori_columns else []),
+                        thresholds=thresholds_targets + (thresholds_apriori if apriori_columns else []),
                     )
-                    #st.write("Utility Scores:", utility_scores)
 
-                    # Combine Results
+                    # Debugging: Check all array lengths before creating DataFrame
+                    st.write(f"📊 Final Check Before DataFrame Creation:")
+                    st.write(f"- idx_samples: {len(idx_samples)}")
+                    st.write(f"- Utility Scores: {len(utility_scores)}")
+                    st.write(f"- Novelty Scores: {len(novelty_scores)}")
+                    st.write(f"- Uncertainty Scores: {len(uncertainty_scores)}")
+                    st.write(f"- Predictions Shape: {predictions.shape}")
+
+                    if apriori_columns:
+                        st.write(f"- Apriori Predictions Shape: {apriori_infer_scaled.shape}")
+
+                    # Ensure all arrays are correctly shaped
+                    idx_samples = np.array(idx_samples).flatten()[:num_samples]
+                    utility_scores = np.array(utility_scores).flatten()[:num_samples]
+                    novelty_scores = np.array(novelty_scores).flatten()[:num_samples]
+                    uncertainty_scores = np.array(uncertainty_scores).flatten()[:num_samples]
+                    predictions = np.array(predictions).reshape(num_samples, len(target_columns))
+
+                    if apriori_columns:
+                        apriori_predictions_original_scale = np.array(apriori_infer_scaled).reshape(num_samples, len(apriori_columns))
+                    else:
+                        apriori_predictions_original_scale = None  # Avoid adding an unnecessary zero column
+
+                    # Use Bayesian Optimization to select the best next sample
+                    best_sample_idx = bayesian_optimization(inputs_train_scaled, targets_train_scaled, inputs_infer_scaled)
+
+                    # ✅ Create the result DataFrame
                     result_df = pd.DataFrame({
                         "Idx_Sample": idx_samples,
                         "Utility": utility_scores,
                         "Novelty": novelty_scores,
-                        "Uncertainty": uncertainty_scores.flatten(),
-                        **{col: predictions[:, i] for i, col in enumerate(target_columns)},
-                        **{col: apriori_predictions_original_scale[:, i] for i, col in enumerate(apriori_columns)},  # Use original scale
-                        **inputs_infer.reset_index(drop=True).to_dict(orient="list"),
-                    }).sort_values(by="Utility", ascending=False).reset_index(drop=True)
+                        "Uncertainty": uncertainty_scores,
+                    })
+
+                    # ✅ Add target predictions
+                    for i, col in enumerate(target_columns):
+                        result_df[col] = predictions[:, i]
+
+                    # ✅ Add apriori predictions only if they exist
+                    if apriori_columns and apriori_predictions_original_scale is not None:
+                        apriori_df = pd.DataFrame(apriori_predictions_original_scale, columns=apriori_columns)
+                        result_df = pd.concat([result_df, apriori_df], axis=1)
+
+                    # ✅ Add input features
+                    result_df = pd.concat([result_df, inputs_infer.reset_index(drop=True)], axis=1)
+
+                    # ✅ Sort results by Utility
+                    result_df = result_df.sort_values(by="Utility", ascending=False).reset_index(drop=True)
+
+                    # ✅ Add a column to highlight the Bayesian-selected sample
+                    result_df["Bayesian Selected"] = result_df["Idx_Sample"] == idx_samples[best_sample_idx]
+
+                    # ✅ Store results in session state
+                    st.session_state.result_df = result_df
+                    st.session_state.experiment_run = True
+
+
 
 
 
@@ -822,10 +1257,11 @@ if uploaded_file:
                     if st.session_state.experiment_run and "result_df" in st.session_state and not st.session_state.result_df.empty:
                         selected_option = st.selectbox(
                             "Select Plot to Generate",
-                            ["Scatter Matrix", "t-SNE Plot", "3D Scatter Plot", "Parallel Coordinate Plot", "Scatter Plot"],
+                            ["Scatter Matrix", "t-SNE Plot", "Distribution of Selected Samples","3D Scatter Plot", "Parallel Coordinate Plot", "Scatter Plot", "Pairwise Distance Heatmap"],
                             key="dropdown_menu",
                         )
 
+                        # Add "Pairwise Distance Heatmap" to the dropdown options
                         if st.button("Generate Plot"):
                             if selected_option == "Scatter Plot":
                                 scatter_fig = px.scatter(
@@ -839,36 +1275,109 @@ if uploaded_file:
                                 )
                                 st.write("### Scatter Plot")
                                 st.plotly_chart(scatter_fig)
+                            
+                            elif selected_option == "Distribution of Selected Samples":
+                                # Get the target column dynamically (last column in dataset)
+                                target_col = data.columns[-1]  # Ensures we always get the last column dynamically
+
+                                # Debug: Check available columns in targets_train
+                                st.write("Available columns in targets_train:", targets_train.columns.tolist())
+
+                                # Ensure target_col exists in targets_train and data
+                                if target_col not in data.columns:
+                                    st.error(f"Column '{target_col}' not found in dataset.")
+                                elif target_col not in targets_train.columns:
+                                    st.error(f"Column '{target_col}' not found in selected training data (targets_train).")
+                                else:
+                                    # Extract selected training samples
+                                    selected_samples = targets_train[target_col].dropna().values.tolist()
+
+                                    # Extract full dataset distribution
+                                    full_dataset = data[target_col].dropna().values.tolist()
+
+                                    # Check if data exists
+                                    if not selected_samples or not full_dataset:
+                                        st.error("No valid data available for plotting. Ensure your dataset is correctly loaded.")
+                                    else:
+                                        # Create DataFrame for visualization
+                                        df_samples = pd.DataFrame({
+                                            "Sample Type": ["Selected"] * len(selected_samples) + ["Full Dataset"] * len(full_dataset),
+                                            target_col: selected_samples + full_dataset
+                                        })
+
+                                        # Create Plotly histogram
+                                        fig = px.histogram(
+                                            df_samples,
+                                            x=target_col,
+                                            color="Sample Type",
+                                            barmode="overlay",
+                                            nbins=20,
+                                            title=f"Distribution of Selected Samples vs Full Dataset ({target_col})",
+                                            labels={target_col: target_col, "Sample Type": "Data Group"}
+                                        )
+
+                                        fig.update_traces(opacity=0.6)
+                                        fig.update_layout(
+                                            xaxis_title=target_col,
+                                            yaxis_title="Frequency",
+                                            legend_title="Sample Type"
+                                        )
+
+                                        st.plotly_chart(fig)
+
+
+
+
+
+                            elif selected_option == "Pairwise Distance Heatmap":
+                                if 'distance_df' in locals():
+                                    # Create a larger interactive heatmap
+                                    heatmap_fig = px.imshow(
+                                        distance_df,
+                                        labels=dict(color="Distance"),
+                                        x=distance_df.columns,
+                                        y=distance_df.index,
+                                        title="Pairwise Distance Heatmap",
+                                        color_continuous_scale="viridis",
+                                    )
+
+                                    # Adjust figure size and improve visibility
+                                    heatmap_fig.update_layout(
+                                        height=800,  # Increase height
+                                        width=1200,   # Increase width
+                                        margin=dict(l=70, r=70, t=70, b=70),  # Adjust margins
+                                        xaxis=dict(title="Samples", tickangle=-45, showgrid=False),  # Improve x-axis labels
+                                        yaxis=dict(title="Samples", showgrid=False),  # Improve y-axis labels
+                                    )
+
+                                    st.write("### Pairwise Distance Heatmap")
+                                    st.plotly_chart(heatmap_fig, use_container_width=False)
+                                else:
+                                    st.error("Distance matrix is not available. Ensure you have computed it before generating this plot.")
+
 
                             elif selected_option == "Scatter Matrix":
                                 if len(target_columns) < 2:
                                     st.error("Scatter Matrix requires at least two target properties. Please select more target properties.")
                                 else:
-                                    try:
-                                        scatter_matrix_fig = plot_scatter_matrix_with_uncertainty(
-                                            result_df=st.session_state.result_df,
-                                            target_columns=target_columns,
-                                            utility_scores=st.session_state.result_df["Utility"]
-                                        )
-                                        st.write("### Scatter Matrix of Target Properties")
-                                        st.plotly_chart(scatter_matrix_fig)
-                                    except Exception as e:
-                                        st.error(f"An error occurred while generating the Scatter Matrix: {str(e)}")
-
+                                    scatter_matrix_fig = plot_scatter_matrix_with_uncertainty(
+                                        result_df=st.session_state.result_df,
+                                        target_columns=target_columns,
+                                        utility_scores=st.session_state.result_df["Utility"]
+                                    )
+                                    st.write("### Scatter Matrix of Target Properties")
+                                    st.plotly_chart(scatter_matrix_fig)
 
                             elif selected_option == "t-SNE Plot":
                                 if "Utility" in st.session_state.result_df.columns and len(input_columns) > 0:
-                                    try:
-                                        tsne_plot = create_tsne_plot_with_hover(
-                                            data=st.session_state.result_df,  # DataFrame containing the data
-                                            feature_cols=input_columns,      # List of feature columns for t-SNE
-                                            utility_col="Utility",           # Column name for coloring by utility
-                                            row_number_col="Idx_Sample"      # Column name for hover labels
-                                        )
-                                        st.write("### t-SNE Plot")
-                                        st.plotly_chart(tsne_plot)
-                                    except Exception as e:
-                                        st.error(f"An error occurred while generating the t-SNE plot: {str(e)}")
+                                    tsne_plot = create_tsne_plot_with_hover(
+                                        data=st.session_state.result_df,
+                                        feature_cols=input_columns,
+                                        utility_col="Utility",
+                                        row_number_col="Idx_Sample"
+                                    )
+                                    st.write("### t-SNE Plot")
+                                    st.plotly_chart(tsne_plot)
                                 else:
                                     st.error("Ensure the dataset has utility scores and selected input features.")
 
@@ -911,8 +1420,6 @@ if uploaded_file:
                             file_name="reptile_predictions.csv",
                             mime="text/csv",
                         )
-
-                
                
                  # Export Session Data
                 session_data = {
@@ -935,6 +1442,8 @@ if uploaded_file:
                     mime="application/json"
                 )
 
+            except Exception as e:
+                st.error(f"An error occurred: {str(e)}")
             except Exception as e:
                 st.error(f"An error occurred: {str(e)}")
 

@@ -27,58 +27,20 @@ def calculate_utility(predictions, uncertainties, apriori, curiosity, weights, m
     predictions = np.array(predictions)
     uncertainties = np.array(uncertainties)
     weights = np.array(weights).reshape(1, -1)
-    max_or_min = np.array(max_or_min)
 
     # Normalize predictions
     prediction_std = predictions.std(axis=0, keepdims=True).clip(min=1e-6)
     prediction_mean = predictions.mean(axis=0, keepdims=True)
     normalized_predictions = (predictions - prediction_mean) / prediction_std
 
-    # Adjust for min/max optimization
-    for i, mode in enumerate(max_or_min[:predictions.shape[1]]):  # Match predictions dimensions
-        if mode == "min":
-            normalized_predictions[:, i] *= -1
+    # Compute Expected Improvement (EI) for Bayesian Optimization
+    expected_improvement = np.maximum(0, (predictions - prediction_mean) - uncertainties)
 
-    # Apply weights to predictions
-    weighted_predictions = normalized_predictions * weights[:, :predictions.shape[1]]
+    # Utility = Expected Improvement + curiosity-adjusted uncertainty
+    utility = expected_improvement + curiosity * uncertainties
 
-    # Normalize uncertainties
-    uncertainty_std = uncertainties.std(axis=0, keepdims=True).clip(min=1e-6)
-    normalized_uncertainties = uncertainties / uncertainty_std
-    weighted_uncertainties = normalized_uncertainties * weights[:, :uncertainties.shape[1]]
-
-    apriori_utility = np.zeros(predictions.shape[0])  # Default if no apriori
-    if apriori is not None and apriori.shape[1] > 0:
-        apriori = np.array(apriori)
-        apriori_std = apriori.std(axis=0, keepdims=True).clip(min=1e-6)
-        apriori_mean = apriori.mean(axis=0, keepdims=True)
-        normalized_apriori = (apriori - apriori_mean) / apriori_std
-
-        # Align thresholds with apriori dimensions
-        if thresholds is not None:
-            thresholds = np.array(thresholds[:apriori.shape[1]]).reshape(1, -1)
-
-        for i in range(apriori.shape[1]):  # Iterate over apriori columns
-            if thresholds is not None and thresholds[0, i] is not None:
-                if max_or_min[predictions.shape[1] + i] == "min":
-                    normalized_apriori[:, i] = np.where(
-                        apriori[:, i] > thresholds[0, i], 0, normalized_apriori[:, i]
-                    )
-                elif max_or_min[predictions.shape[1] + i] == "max":
-                    normalized_apriori[:, i] = np.where(
-                        apriori[:, i] < thresholds[0, i], 0, normalized_apriori[:, i]
-                    )
-
-        weighted_apriori = normalized_apriori * weights[:, predictions.shape[1]:]
-        apriori_utility = weighted_apriori.sum(axis=1)
-
-    # Combine all utility components
-    utility = (
-        weighted_predictions.sum(axis=1)
-        + (curiosity * 10) * weighted_uncertainties.sum(axis=1)  # Amplify uncertainty impact
-        + apriori_utility
-    )
     return utility
+
 
 
 
