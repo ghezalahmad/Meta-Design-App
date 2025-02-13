@@ -611,12 +611,7 @@ if uploaded_file:
                     "Uncertainty": uncertainty_scores,
                 })
 
-                # Debugging array lengths before DataFrame creation
-                st.write(f"idx_samples: {len(idx_samples)}")
-                st.write(f"Utility Scores: {len(utility_scores)}")
-                st.write(f"Novelty Scores: {len(novelty_scores)}")
-                st.write(f"Uncertainty Scores: {len(uncertainty_scores)}")
-                st.write(f"Predictions shape: {predictions.shape}")  # Should be (num_samples, num_targets)
+            
 
                 if apriori_columns:
                     st.write(f"Apriori Predictions shape: {apriori_predictions_original_scale.shape}")  # Should match num_samples
@@ -1175,13 +1170,7 @@ if uploaded_file:
                         thresholds=thresholds_targets + (thresholds_apriori if apriori_columns else []),
                     )
 
-                    # Debugging: Check all array lengths before creating DataFrame
-                    st.write(f"📊 Final Check Before DataFrame Creation:")
-                    st.write(f"- idx_samples: {len(idx_samples)}")
-                    st.write(f"- Utility Scores: {len(utility_scores)}")
-                    st.write(f"- Novelty Scores: {len(novelty_scores)}")
-                    st.write(f"- Uncertainty Scores: {len(uncertainty_scores)}")
-                    st.write(f"- Predictions Shape: {predictions.shape}")
+                 
 
                     if apriori_columns:
                         st.write(f"- Apriori Predictions Shape: {apriori_infer_scaled.shape}")
