@@ -21,7 +21,6 @@ from app.visualization import (
     plot_scatter_matrix_with_uncertainty, create_tsne_plot_with_hover,
     create_parallel_coordinates, create_3d_scatter
 )
-from app.llm_suggestion import get_llm_suggestions
 from app.session_management import restore_session
 from app.bayesian_optimizer import bayesian_optimization
 
