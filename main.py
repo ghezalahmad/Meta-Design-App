@@ -80,17 +80,17 @@ model_type = st.sidebar.selectbox(
 visualization_expander = st.sidebar.expander("Visualization Settings", expanded=False)
 with visualization_expander:
     show_visualizations = st.checkbox(
-        "Show Exploration vs. Exploitation Visualizations", value=True,
+        "Show Exploration vs. Exploitation Visualizations", value=False,
         help="Enable to view detailed charts of how curiosity and acquisition functions influence candidate selection."
     )
     
     show_acquisition_viz = st.checkbox(
-        "Show Acquisition Function Analysis", value=True,
+        "Show Acquisition Function Analysis", value=False,
         help="Enable to visualize how the acquisition function balances exploration and exploitation."
     )
     
     show_pareto_front = st.checkbox(
-        "Show Pareto Front for Multi-Objective Optimization", value=True,
+        "Show Pareto Front for Multi-Objective Optimization", value=False,
         help="Enable to visualize the Pareto front for multi-objective optimization."
     )
 
