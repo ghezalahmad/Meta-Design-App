@@ -8,3 +8,4 @@ plotly
 scikit-optimize
 seaborn
 openai
+streamlit-aggrid
