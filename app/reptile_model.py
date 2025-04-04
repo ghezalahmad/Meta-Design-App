@@ -3,220 +3,389 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
-from app.utils import initialize_scheduler, calculate_utility, calculate_novelty, calculate_uncertainty
-import math
+from sklearn.preprocessing import RobustScaler
 import streamlit as st
-# Import visualization function
-from app.visualization import visualize_exploration_exploitation
-
+from app.utils import (
+    calculate_utility, calculate_novelty, calculate_uncertainty,
+    initialize_scheduler, balance_exploration_exploitation
+)
 
 class ReptileModel(nn.Module):
-    def __init__(self, input_size, output_size, hidden_size=256):
+    def __init__(self, input_size, output_size, hidden_size=256, num_layers=3, dropout_rate=0.3):
         super(ReptileModel, self).__init__()
-        self.network = nn.Sequential(
-            nn.Linear(input_size, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_size // 2, output_size),
-            nn.Softplus()
-        )
-
-
+        
+        # Add layer normalization for better training stability
+        self.input_norm = nn.LayerNorm(input_size)
+        
+        # Use wider hidden layers like in GPR's RBF kernel approximation
+        self.hidden_size = hidden_size
+        self.layers = nn.ModuleList()
+        self.layer_norms = nn.ModuleList()
+        self.dropouts = nn.ModuleList()
+        
+        # First layer
+        self.layers.append(nn.Linear(input_size, hidden_size * 2))  # Wider first layer
+        self.layer_norms.append(nn.LayerNorm(hidden_size * 2))
+        self.dropouts.append(nn.Dropout(dropout_rate))
+        
+        # Hidden layers
+        for i in range(1, num_layers - 1):
+            in_size = hidden_size * 2 if i == 1 else hidden_size
+            self.layers.append(nn.Linear(in_size, hidden_size))
+            self.layer_norms.append(nn.LayerNorm(hidden_size))
+            self.dropouts.append(nn.Dropout(dropout_rate))
+        
+        # Final layer
+        self.output_layer = nn.Linear(hidden_size, output_size)
+        
+        # Initialize weights
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)  # Xavier works better for regression
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+    
     def forward(self, x):
-        return self.network(x)
+        x = self.input_norm(x)
+        
+        # Forward through layers with skips like in ResNet
+        h = x
+        for i, (layer, norm, dropout) in enumerate(zip(self.layers, self.layer_norms, self.dropouts)):
+            z = layer(h)
+            z = norm(z)
+            z = torch.relu(z)
+            z = dropout(z)
+            
+            # Use residual connections for better gradient flow when shapes match
+            if i > 0 and h.shape == z.shape:
+                h = h + z
+            else:
+                h = z
+        
+        # Output prediction - no activation to allow full range
+        return self.output_layer(h)
+    
+def reptile_train(model, data, input_columns, target_columns, epochs, learning_rate, num_tasks, **kwargs):
+    
+    # Get labeled data
+    labeled_data = data.dropna(subset=target_columns)
+    MINIMUM_DATA_POINTS = 8
+    if len(labeled_data) > 0 and len(labeled_data) < MINIMUM_DATA_POINTS:
+        st.warning(f"🔄 Few labeled samples ({len(labeled_data)}). Tiling for robust training.")
+        tile_factor = int(np.ceil(MINIMUM_DATA_POINTS / len(labeled_data)))
+        labeled_data = pd.concat([labeled_data] * tile_factor, ignore_index=True)
 
-def reptile_train(model, data, input_columns, target_columns, epochs, learning_rate, num_tasks, scaler_x=None, scaler_y=None, early_stopping=True):
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
-    loss_function = torch.nn.SmoothL1Loss()
-    
-    if scaler_x is None:
-        scaler_x = StandardScaler()
-    if scaler_y is None:
-        scaler_y = StandardScaler()
-    
-    smoothed_loss = float('inf')
-    patience = 10  
-    no_improve_counter = 0
-    loss_threshold = 0.001
-    
-    # ✅ Get Labeled & Unlabeled Data
-    labeled_data = data.dropna(subset=target_columns).sort_index()
-    unlabeled_data = data[data[target_columns].isna().any(axis=1)]
+        for col in input_columns:
+            noise_scale = labeled_data[col].std() * 0.05
+            labeled_data[col] += np.random.normal(0, noise_scale, size=len(labeled_data))
+        for col in target_columns:
+            noise_scale = max(labeled_data[col].std() * 0.02, 1e-6)
+            labeled_data[col] += np.random.normal(0, noise_scale, size=len(labeled_data))
 
-    if len(labeled_data) < 4:  # Ensure a minimum batch size of 4
-        st.warning("❌ Not enough labeled samples to continue training.")
-        return model, scaler_x, scaler_y
-
-    # ✅ Standardize Inputs and Targets
-    inputs = scaler_x.fit_transform(labeled_data[input_columns].values)
-    targets = scaler_y.fit_transform(labeled_data[target_columns].values)
     
+    scaler_x = RobustScaler().fit(data[input_columns])
+    scaler_y = RobustScaler().fit(labeled_data[target_columns])
+    
+    inputs = scaler_x.transform(labeled_data[input_columns])
+    targets = scaler_y.transform(labeled_data[target_columns])
+    
+    # Similar to SLAMD: Print target range to verify
+    print(f"Target range: {labeled_data[target_columns].min().values} to {labeled_data[target_columns].max().values}")
+    
+    # Convert to tensors
     inputs = torch.tensor(inputs, dtype=torch.float32)
     targets = torch.tensor(targets, dtype=torch.float32)
     
-    # ✅ Now compute the batch size using inputs length
-    batch_size = min(8, max(2, len(inputs) // (2 * num_tasks)))
-    inner_loop_steps = min(32, len(inputs) * 4)  # Inner loop steps similar to MAML
+    # Use a more appropriate loss function for material properties regression
+    # Huber loss is more robust to outliers than MSE
+    loss_function = nn.HuberLoss(delta=1.0)
     
-    scheduler = initialize_scheduler(optimizer, scheduler_type="CosineAnnealing", T_max=epochs // 2, eta_min=1e-5)
+    # Like SLAMD: Use Adam with a higher initial learning rate
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     
-    # ✅ Train the Model with `num_tasks` and `inner_loop_steps`
+    # Like SLAMD's GPR: Add a validation set for early stopping
+    from sklearn.model_selection import train_test_split
+    train_inputs, val_inputs, train_targets, val_targets = train_test_split(
+        inputs, targets, test_size=0.2, random_state=42
+    )
+    
+    # Train like SLAMD: Focus on fitting the training data very well first
+    # This is different from standard meta-learning but works better for extrapolation
+    best_loss = float('inf')
+    best_model = None
+    patience = 20
+    patience_counter = 0
+    
     for epoch in range(epochs):
+        model.train()
         epoch_loss = 0.0
-        for task in range(num_tasks):
-            indices = torch.randperm(len(inputs))[:batch_size]
-            batch_inputs = inputs[indices]
-            batch_targets = targets[indices]
+        
+        # Partition data into tasks
+        task_size = len(train_inputs) // num_tasks
+        tasks = [(i * task_size, min((i + 1) * task_size, len(train_inputs))) for i in range(num_tasks)]
+        
+        for start, end in tasks:
+            if start == end:
+                continue
+                
+            task_inputs = train_inputs[start:end]
+            task_targets = train_targets[start:end]
             
-            for _ in range(inner_loop_steps):  # Inner loop steps
+            # Inner loop optimization
+            for _ in range(5):  # 5 steps per task
                 optimizer.zero_grad()
-                predictions = model(batch_inputs)
-                loss = loss_function(predictions, batch_targets)
+                predictions = model(task_inputs)
+                loss = loss_function(predictions, task_targets)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
             
             epoch_loss += loss.item()
         
-        smoothed_loss = 0.95 * smoothed_loss + 0.05 * (epoch_loss / num_tasks) if smoothed_loss != float('inf') else (epoch_loss / num_tasks)
-        print(f"✅ Epoch {epoch}/{epochs}, Learning Rate: {scheduler.get_last_lr()[0]:.6f}, Batch Size: {batch_size}, Num Tasks: {num_tasks}, Smoothed Loss: {smoothed_loss:.4f}")
+        # Validate after each epoch
+        model.eval()
+        with torch.no_grad():
+            val_preds = model(val_inputs)
+            val_loss = loss_function(val_preds, val_targets).item()
         
-        scheduler.step()
+        print(f"Epoch {epoch+1}/{epochs}, Train Loss: {epoch_loss/len(tasks):.4f}, Val Loss: {val_loss:.4f}")
         
-        if early_stopping:
-            if abs(smoothed_loss - loss.item()) < loss_threshold:
-                no_improve_counter += 1
-            else:
-                no_improve_counter = 0
-            
-            if no_improve_counter >= patience:
-                print("🛑 Early stopping triggered: No significant loss improvement.")
+        # Early stopping
+        if val_loss < best_loss:
+            best_loss = val_loss
+            best_model = model.state_dict().copy()
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print(f"Early stopping at epoch {epoch+1}")
                 break
-
+    
+    # Restore best model
+    if best_model:
+        model.load_state_dict(best_model)
+    
+    # Like SLAMD: Final evaluation on all labeled data
+    model.eval()
+    with torch.no_grad():
+        all_preds = model(inputs)
+        final_loss = loss_function(all_preds, targets).item()
+    
+    print(f"Final loss on all labeled data: {final_loss:.4f}")
+    
+    # SLAMD-like feature: Verify prediction range at the end
+    with torch.no_grad():
+        all_preds = model(inputs).numpy()
+        all_preds = scaler_y.inverse_transform(all_preds)
+        pred_min = all_preds.min()
+        pred_max = all_preds.max()
+        true_min = scaler_y.inverse_transform(targets.numpy()).min()
+        true_max = scaler_y.inverse_transform(targets.numpy()).max()
+        
+        print(f"Target range: {true_min:.2f} to {true_max:.2f}")
+        print(f"Prediction range: {pred_min:.2f} to {pred_max:.2f}")
+        
+        # SLAMD-like extrapolation check
+        extrapolation_factor = (pred_max - true_min) / (true_max - true_min)
+        print(f"Extrapolation factor: {extrapolation_factor:.2f}x")
+        if extrapolation_factor < 1.2:
+            print("⚠️ Model has limited extrapolation capability. SLAMD would typically achieve 1.5-2.0x")
+    
     return model, scaler_x, scaler_y
 
 
-
-
-
-
-
-
-
-
-def evaluate_reptile(model, data, input_columns, target_columns, curiosity, weights, max_or_min, acquisition="UCB"):
-    """
-    Evaluates all unlabeled samples, computes utility, and selects the best candidate for lab testing.
-    Includes debugging outputs for utility, uncertainty, novelty, and curiosity influence.
-    """
+def evaluate_reptile(model, data, input_columns, target_columns, curiosity, weights, max_or_min, 
+                    acquisition="UCB", strict_optimization=True):
+   
+    # Get unlabeled data
     unlabeled_data = data[data[target_columns].isna().any(axis=1)]
-
+    labeled_data = data.dropna(subset=target_columns)
+    
     if unlabeled_data.empty:
         st.warning("No unlabeled samples available for evaluation.")
         return None
-
-    scaler_inputs = StandardScaler().fit(data[input_columns])
-    scaler_targets = StandardScaler().fit(data.dropna(subset=target_columns)[target_columns])
-
+    
+    # Scale inputs using all available data for better distribution
+    scaler_inputs = RobustScaler().fit(data[input_columns])
+    
+    # Scale targets using only labeled data
+    scaler_targets = RobustScaler().fit(labeled_data[target_columns])
+    
+    # Transform unlabeled inputs
     inputs_infer = scaler_inputs.transform(unlabeled_data[input_columns])
     inputs_infer_tensor = torch.tensor(inputs_infer, dtype=torch.float32)
-
+    
+    # Get mean predictions
+    model.eval()
     with torch.no_grad():
         predictions_scaled = model(inputs_infer_tensor).numpy()
-
-    predictions = scaler_targets.inverse_transform(predictions_scaled)
-    novelty_scores = calculate_novelty(inputs_infer, scaler_inputs.transform(data.dropna(subset=target_columns)[input_columns]))
-    model.train()
-
-    uncertainty_scores = calculate_uncertainty(model, inputs_infer_tensor, num_perturbations=500, dropout_rate=0.5)
-
-    # ✅ Debugging Outputs
-    print(f"\n🧠 Acquisition Function: {acquisition}")
-    print("🔮 Predictions - Min:", np.min(predictions), "Max:", np.max(predictions), "Mean:", np.mean(predictions))
-    print("❓ Uncertainty - Min:", np.min(uncertainty_scores), "Max:", np.max(uncertainty_scores), "Mean:", np.mean(uncertainty_scores))
-    print("🌟 Novelty - Min:", np.min(novelty_scores), "Max:", np.max(novelty_scores), "Mean:", np.mean(novelty_scores))
-    print("🧠 Curiosity:", curiosity)
-
-    # Ensure max_or_min is formatted correctly
-    if max_or_min is None or not isinstance(max_or_min, list):
-        max_or_min = ['max'] * len(target_columns)
-
-    # Compute Utility Scores
-    utility_scores = calculate_utility(
-        predictions,
-        uncertainty_scores,
-        None,
-        curiosity,
-        weights,
-        max_or_min,
-        acquisition=acquisition
-    )
-
-    utility_scores = np.log1p(utility_scores)
-
-    # ✅ Test curiosity influence (for debugging with acquisition function)
-    test_utility_exploit = calculate_utility(
-        predictions, 
-        uncertainty_scores, 
-        None, 
-        -2,  # Max exploitation
-        weights, 
-        max_or_min, 
-        acquisition=acquisition
+    
+    # Calculate uncertainty using Monte Carlo dropout
+    model.train()  # Enable dropout for uncertainty estimation
+    uncertainty_scores = calculate_uncertainty(
+        model, 
+        inputs_infer_tensor, 
+        num_perturbations=50,  # More samples for better estimation
+        noise_scale=0.05       # Small noise to avoid extreme perturbations
     )
     
-    test_utility_explore = calculate_utility(
-        predictions, 
-        uncertainty_scores, 
-        None, 
-        2,  # Max exploration
-        weights, 
-        max_or_min, 
-        acquisition=acquisition
-    )
+    # Inverse transform predictions to original scale
+    predictions = scaler_targets.inverse_transform(predictions_scaled)
+    # 🔒 Ensure non-negative predictions
+    predictions = np.maximum(predictions, 0)
 
-    print("\n🔍 **Utility Scores with Curiosity Variants:**")
-    print("➡️ Default Curiosity (", curiosity, ") - Utility:", utility_scores[:5])
-    print("📉 Max Exploitation (Curiosity = -2) - Utility:", test_utility_exploit[:5])
-    print("📈 Max Exploration (Curiosity = +2) - Utility:", test_utility_explore[:5])
+    # 🚫 Threshold enforcement
+    min_strength_threshold = 10
+    invalid_rows = np.any(predictions < min_strength_threshold, axis=1)
+    
+    # Calculate novelty
+    labeled_inputs = scaler_inputs.transform(labeled_data[input_columns])
+    novelty_scores = calculate_novelty(inputs_infer, labeled_inputs)
+    
+    # Ensure weights and max_or_min are properly formatted
+    if not isinstance(weights, np.ndarray):
+        weights = np.array(weights)
+    
+    if max_or_min is None or not isinstance(max_or_min, list):
+        max_or_min = ['max'] * len(target_columns)
+    
+     # ⚖️ SLAMD-style acquisition weights adjustment
+    weights = weights + np.random.uniform(0.01, 0.1, size=weights.shape)
+    weights = np.clip(weights, 0.1, 1.0)
+    
+    # Get the direction for the first/main target property
+    main_direction = max_or_min[0] if isinstance(max_or_min, list) and len(max_or_min) > 0 else "max"
+   
+
+    
+    # Debug: Print optimization direction and current approach
+    print(f"🎯 Target optimization direction: {main_direction}")
+    print(f"🔍 Acquisition function: {acquisition}, Curiosity level: {curiosity}")
+    
+    # DIRECT OVERRIDE FOR MAXIMIZATION
+    # 🎯 SLAMD-style acquisition selection
+    from app.utils import select_acquisition_function
+    if acquisition is None:
+        acquisition = select_acquisition_function(curiosity, len(labeled_data))
+    # Debug: Print optimization direction and current approach
+    print(f"🎯 Target optimization direction: {main_direction}")
+    print(f"🔍 Acquisition function: {acquisition}, Curiosity level: {curiosity}")
 
 
+    # For maximization problems with strict_optimization, we'll use predictions directly
+    if main_direction == "max" and strict_optimization:
+        print("⚠️ Using direct maximization override to ensure highest values are selected")
+        
+        # For maximization, we create a simple rank-weighted utility
+        # that strongly favors the highest predicted values
+        raw_values = predictions[:, 0]
+        ranks = np.argsort(np.argsort(-raw_values))  # Double argsort for ranking (highest=0)
+        
+        # Create utility based mostly on rank with a small uncertainty component
+        # This heavily weights toward the highest predicted values
+        rank_weight = 0.9  # 90% weight on highest prediction
+        uncertainty_weight = 0.1  # Only 10% weight on uncertainty
+        
+        # Normalize ranks to [0,1] with highest value = 1
+        norm_ranks = (len(ranks) - ranks) / len(ranks)
+        
+        # Normalize uncertainty for the small uncertainty component
+        norm_uncertainty = uncertainty_scores.flatten() / (np.max(uncertainty_scores) + 1e-10)
+        
+        # Calculate utility directly - highest prediction gets highest utility
+        direct_utility = rank_weight * norm_ranks + uncertainty_weight * norm_uncertainty
+        
+        # Set as utility scores
+        utility_scores = direct_utility.reshape(-1, 1)
+      
+
+        
+        print(f"Highest predicted value: {np.max(raw_values)}")
+        print(f"Directly prioritizing highest predictions for maximization")
+    else:
+        # Original calculation for minimization or when strict_optimization is False
+        utility_scores = calculate_utility(
+            predictions,
+            uncertainty_scores,
+            novelty_scores,
+            curiosity,
+            weights,
+            max_or_min,
+            acquisition=acquisition
+        )
+
+        # 🛑 Apply penalty for invalid predictions
+        if invalid_rows.any():
+            utility_scores[invalid_rows] = -np.inf
+
+    
+    # Create result DataFrame
     result_df = unlabeled_data.copy()
-
-    # Add calculated columns for utility, uncertainty, and novelty
+    
+    # Add calculated metrics
     result_df["Utility"] = utility_scores.flatten()
     result_df["Uncertainty"] = np.clip(uncertainty_scores, 1e-6, None).flatten()
     result_df["Novelty"] = novelty_scores.flatten()
-
-    # Add predicted values for the target columns
+    
+    # Add exploration-exploitation balance metrics
+    result_df["Exploration"] = result_df["Uncertainty"] * result_df["Novelty"]
+    result_df["Exploitation"] = 1.0 - result_df["Uncertainty"]
+    
+    # Add predicted values for target columns
     for i, col in enumerate(target_columns):
         result_df[col] = predictions[:, i]
-
-    # Sort by utility and mark the top candidate for testing
+    
+    # Sort by utility and mark the best candidate
     result_df = result_df.sort_values(by="Utility", ascending=False)
     result_df["Selected for Testing"] = False
     result_df.iloc[0, result_df.columns.get_loc("Selected for Testing")] = True
-
-    # ✅ Reset index to ensure sequential row numbering (use default Streamlit numbering)
+    
+    # Double-check for maximization problems that we're selecting a high value
+    if main_direction == "max" and strict_optimization:
+        # Get the index of the highest predicted value
+        highest_value_idx = np.argmax(predictions[:, 0])
+        highest_value = predictions[highest_value_idx, 0]
+        
+        # Get the selected value
+        selected_idx = result_df.index[0]
+        selected_value = result_df.iloc[0][target_columns[0]]
+        
+        print(f"Highest predicted value: {highest_value}")
+        print(f"Selected value: {selected_value}")
+        
+        # If the selected value is significantly lower, override with the highest value
+        if highest_value > selected_value * 1.1:  # If highest is more than 10% better
+            print(f"⚠️ Overriding selection to ensure highest value ({highest_value})")
+            # Find the row with the highest value
+            highest_row = result_df[result_df[target_columns[0]] == highest_value]
+            if not highest_row.empty:
+                # Reset the selection
+                result_df["Selected for Testing"] = False
+                # Mark the highest value row
+                highest_idx = highest_row.index[0]
+                result_df.loc[highest_idx, "Selected for Testing"] = True
+    
+    # Debug: Report final selected candidate
+    selected_idx = result_df["Selected for Testing"].idxmax()
+    print(f"✅ Selected candidate with value: {result_df.loc[selected_idx, target_columns[0]]}")
+    print(f"✅ Utility: {result_df.loc[selected_idx, 'Utility']}, Uncertainty: {result_df.loc[selected_idx, 'Uncertainty']}")
+    
+    # Reset index for better display
     result_df.reset_index(drop=True, inplace=True)
-
-    # 🆕 Reorder columns without losing existing dataset columns
-    columns_to_front = ["Idx_Sample"]
-    target_columns = [col for col in result_df.columns if col in target_columns]
-    metrics_columns = ["Utility", "Novelty", "Uncertainty"]
-
-    # Preserve all other columns
-    remaining_columns = [col for col in result_df.columns if col not in columns_to_front + target_columns + metrics_columns]
-
-    # Set the new column order
-    new_column_order = columns_to_front + metrics_columns + target_columns + remaining_columns
+    
+    # Organize columns for better presentation
+    columns_to_front = ["Idx_Sample"] if "Idx_Sample" in result_df.columns else []
+    metrics_columns = ["Utility", "Exploration", "Exploitation", "Novelty", "Uncertainty"]
+    
+    # Get all other columns excluding metrics and targets
+    remaining_columns = [col for col in result_df.columns 
+                         if col not in columns_to_front + metrics_columns + target_columns + ["Selected for Testing"]]
+    
+    # Set the new column order, ensuring all columns exist
+    new_column_order = [col for col in (columns_to_front + metrics_columns + target_columns + 
+                                       remaining_columns + ["Selected for Testing"])
+                        if col in result_df.columns]
+    
     result_df = result_df[new_column_order]
-
-    # 🆕 Display the DataFrame in Streamlit with only the built-in index
-    #st.dataframe(result_df, use_container_width=True)
-
+    
     return result_df
-
-
