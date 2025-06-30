@@ -280,7 +280,7 @@ def create_tsne_plot_with_hover(df, input_columns, utility_column='Utility', lab
 
     # Run t-SNE with fixed params to match SLAMD
     tsne = TSNE(n_components=2, verbose=0, perplexity=min(20, len(features) - 1),
-                n_iter=350, random_state=42, init='pca', learning_rate=100)
+                max_iter=350, random_state=42, init='pca', learning_rate='auto') # Changed n_iter to max_iter
     tsne_result = tsne.fit_transform(features)
 
     tsne_plot_df = pd.DataFrame({
