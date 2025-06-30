@@ -14,42 +14,56 @@ class BayesianOptimizer:
     and support for exploration-exploitation trade-off.
     """
     
-    def __init__(self, bounds=None, kernel=None, alpha=1e-6, n_restarts=10, normalize_y=True):
+    def __init__(self, surrogate_model=None, bounds=None, kernel=None, alpha=1e-6, n_restarts=10, normalize_y=True):
         """
         Initialize the Bayesian optimizer.
         
         Parameters:
         -----------
+        surrogate_model : object, optional
+            A pre-trained surrogate model instance. Must implement a method like
+            `predict_with_uncertainty(X)` which returns (mean, uncertainty_metric)
+            and have an attribute `is_trained` (boolean) and `scaler_x`, `scaler_y` if it uses them.
+            If None, an internal GaussianProcessRegressor will be used.
         bounds : dict
-            Dictionary mapping feature names to (lower, upper) bounds
+            Dictionary mapping feature names to (lower, upper) bounds for internal GP optimization.
         kernel : sklearn.gaussian_process.kernels.Kernel
-            Kernel for Gaussian Process
+            Kernel for the internal Gaussian Process if surrogate_model is None.
         alpha : float
-            Noise parameter for GP
+            Noise parameter for the internal GP.
         n_restarts : int
-            Number of restarts for GP optimizer
+            Number of restarts for the internal GP optimizer.
         normalize_y : bool
-            Whether to normalize targets for GP
+            Whether to normalize targets for the internal GP.
         """
+        self.surrogate_model = surrogate_model
         self.bounds = bounds
-        
-        # Default kernel: Matern 5/2 with noise component
-        if kernel is None:
-            self.kernel = ConstantKernel(1.0) * Matern(length_scale=1.0, nu=2.5) + WhiteKernel(noise_level=0.1)
-        else:
-            self.kernel = kernel
-            
-        self.gp = GaussianProcessRegressor(
-            kernel=self.kernel,
-            alpha=alpha,
-            n_restarts_optimizer=n_restarts,
-            normalize_y=normalize_y,
-            random_state=42
-        )
-        
         self.X_train = None
-        self.y_train = None
+        self.y_train = None # Will store original scale y_train for acquisition functions like EI/PI
         self.is_fitted = False
+
+        if self.surrogate_model is not None:
+            if not hasattr(self.surrogate_model, 'predict_with_uncertainty') or \
+               not callable(self.surrogate_model.predict_with_uncertainty):
+                raise ValueError("Provided surrogate_model must have a 'predict_with_uncertainty' method.")
+            # We assume a pre-trained surrogate model is already fitted.
+            # The `fit` method of BayesianOptimizer will primarily handle data for acquisition functions.
+            self.gp = None # No internal GP needed
+            self.kernel = None
+        else:
+            # Default kernel: Matern 5/2 with noise component
+            if kernel is None:
+                self.kernel = ConstantKernel(1.0) * Matern(length_scale=1.0, nu=2.5) + WhiteKernel(noise_level=0.1)
+            else:
+                self.kernel = kernel
+
+            self.gp = GaussianProcessRegressor(
+                kernel=self.kernel,
+                alpha=alpha,
+                n_restarts_optimizer=n_restarts,
+                normalize_y=normalize_y,
+                random_state=42
+            )
     
     def fit(self, X, y):
         """
@@ -66,28 +80,62 @@ class BayesianOptimizer:
         if y.ndim == 1:
             y = y.reshape(-1, 1)
         
-        # Filter out NaN/Inf values
+        # Store original X and y for reference and potential use by surrogates
+        # self.X_raw_train = X
+        # self.y_raw_train = y
+
+        # Filter out NaN/Inf values from y for fitting GP or storing y_train
         valid_idx = np.isfinite(y).all(axis=1)
-        X_valid = X[valid_idx]
+        X_valid_np = X[valid_idx] if isinstance(X, np.ndarray) else X.iloc[valid_idx].values
         y_valid = y[valid_idx]
         
-        if len(X_valid) == 0:
-            raise ValueError("No valid data points after filtering NaN/Inf values")
+        if len(X_valid_np) == 0:
+            raise ValueError("No valid data points after filtering NaN/Inf values for y.")
         
-        self.X_train = X_valid
-        self.y_train = y_valid
-        
-        self.gp.fit(X_valid, y_valid)
-        self.is_fitted = True
-        
-        # Log kernel parameters after fitting
-        st.info(f"Fitted GP model with kernel: {self.gp.kernel_}")
-        
+        # Store X_train as DataFrame if original X was a DataFrame, otherwise as numpy.
+        # This helps in _get_surrogate_prediction if column names are needed.
+        if isinstance(X, pd.DataFrame):
+            self.X_train_df_columns = X.columns.tolist() # Store column names
+            self.X_train = X.iloc[valid_idx] # Store the filtered DataFrame
+        else:
+            self.X_train_df_columns = None
+            self.X_train = X_valid_np # Store as numpy array
+
+        self.y_train = y_valid # Store original scale y for EI/PI y_max
+
+        if self.surrogate_model:
+            if not getattr(self.surrogate_model, 'is_trained', False):
+                # This case should ideally be handled before calling BayesianOptimizer,
+                # but as a safeguard:
+                st.warning("Surrogate model provided to BayesianOptimizer is not marked as trained. Fitting it now.")
+                # Attempt to fit the surrogate if it has a 'train' method similar to our RFModel/other models
+                if hasattr(self.surrogate_model, 'train') and callable(self.surrogate_model.train):
+                    # This is tricky because surrogate_model.train might need input_columns, target_columns etc.
+                    # For now, we assume the surrogate is pre-trained.
+                    # If direct fitting is needed here, the interface needs to be more complex.
+                    # Consider raising an error or relying on pre-training.
+                    st.error("BayesianOptimizer expects a pre-trained surrogate model or will train its internal GP.")
+                    # For now, let's assume we can't just call a generic 'train' method without more context.
+                    # The primary design is for pre-trained surrogates.
+                else:
+                    st.warning("Surrogate model does not have a 'train' method. Assuming it's pre-fitted or needs no fitting here.")
+            self.is_fitted = True # Mark BO as "fitted" as it has data and a surrogate.
+            st.info(f"BayesianOptimizer using provided pre-trained surrogate: {type(self.surrogate_model).__name__}")
+
+        elif self.gp: # Use internal GP
+            self.gp.fit(X_valid, y_valid) # y_valid is original scale here if normalize_y=False for GP
+                                       # if normalize_y=True, GP handles it.
+            self.is_fitted = True
+            st.info(f"Fitted internal GP model with kernel: {self.gp.kernel_}")
+        else:
+            raise RuntimeError("BayesianOptimizer has neither a surrogate_model nor an internal GP to fit.")
+
         return self
     
-    def predict(self, X, return_std=False):
+    def _predict_with_internal_gp(self, X, return_std=False):
         """
-        Make predictions with the Gaussian Process model.
+        Make predictions with the *internal* Gaussian Process model.
+        This method is only used if no external surrogate_model is provided.
         
         Parameters:
         -----------
@@ -103,10 +151,61 @@ class BayesianOptimizer:
         y_std : numpy.ndarray (optional)
             Standard deviation of predictions
         """
-        if not self.is_fitted:
-            raise ValueError("Model not fitted yet. Call fit() first.")
+        if not self.is_fitted or not self.gp: # Check if internal GP exists
+            raise ValueError("Internal GP not fitted yet or not available. Call fit() first or provide a surrogate.")
         
         return self.gp.predict(X, return_std=return_std)
+
+    def _get_surrogate_prediction(self, X_np: np.ndarray):
+        """
+        Gets prediction (mean and std_dev) from the active surrogate model (either internal GP or provided external model).
+        Ensures X_np is temporarily converted to DataFrame if needed by the surrogate.
+
+        Args:
+            X_np (np.ndarray): Input features in original scale.
+
+        Returns:
+            tuple: (mu, sigma) - mean predictions and standard deviations, both in original target scale.
+        """
+        if not self.is_fitted:
+            raise ValueError("BayesianOptimizer not fitted yet. Call fit() first.")
+
+        if self.surrogate_model:
+            # Assuming surrogate_model.predict_with_uncertainty expects X and input_columns (if it's like RFModel)
+            # The input_columns can be derived from self.bounds if set during optimize, or self.X_train
+            input_columns = None
+            if self.bounds: # Primarily for the .optimize() method that works in continuous space
+                input_columns = list(self.bounds.keys())
+            elif self.X_train_df_columns: # From data passed to .fit()
+                input_columns = self.X_train_df_columns
+
+            # If the surrogate needs a DataFrame and column names (like our RFModel):
+            if hasattr(self.surrogate_model, 'predict_with_uncertainty') and \
+               'input_columns' in self.surrogate_model.predict_with_uncertainty.__code__.co_varnames and \
+               input_columns and not isinstance(X_np, pd.DataFrame) :
+                X_df = pd.DataFrame(X_np, columns=input_columns)
+                # This assumes the surrogate's predict_with_uncertainty can take input_columns as a kwarg
+                mu, uncertainty = self.surrogate_model.predict_with_uncertainty(X_df, input_columns=input_columns)
+            else:
+                # Assume surrogate can handle numpy array directly, or X_np is already a DataFrame
+                # and its predict_with_uncertainty doesn't strictly require input_columns as a separate arg
+                mu, uncertainty = self.surrogate_model.predict_with_uncertainty(X_np)
+
+            # The uncertainty metric from surrogate_model.predict_with_uncertainty is assumed to be std_dev.
+            # Our RFModel was updated to return std_dev. NN wrappers will need to do the same.
+            sigma = uncertainty
+        elif self.gp:
+            mu, sigma = self._predict_with_internal_gp(X_np, return_std=True)
+        else:
+            raise RuntimeError("No surrogate model or internal GP available for prediction.")
+
+        # Ensure mu is (n_samples,) or (n_samples, 1) and sigma is (n_samples,)
+        if mu.ndim > 1 and mu.shape[1] == 1:
+            mu = mu.ravel()
+        if sigma.ndim > 1 and sigma.shape[1] == 1:
+            sigma = sigma.ravel()
+
+        return mu, sigma
     
     def acquisition_function(self, X, acquisition="UCB", xi=0.01, kappa=2.0, curiosity=0.0):
         """
@@ -130,14 +229,14 @@ class BayesianOptimizer:
         values : numpy.ndarray
             Acquisition function values (higher is better)
         """
-        if not self.is_fitted:
+        if not self.is_fitted: # This check is also in _get_surrogate_prediction, but good for early exit.
             raise ValueError("Model not fitted yet. Call fit() first.")
         
-        # Get predictions and uncertainties
-        mu, sigma = self.predict(X, return_std=True)
+        # Get predictions and uncertainties using the new unified method
+        mu, sigma = self._get_surrogate_prediction(X)
         
-        # Ensure sigma is not zero
-        sigma = np.maximum(sigma, 1e-6)
+        # Ensure sigma is non-negative (it's std_dev) and not zero to avoid division errors.
+        sigma = np.maximum(sigma, 1e-9) # Changed from 1e-6 to 1e-9 for potentially smaller std devs
         
         # Adjust parameters based on curiosity
         kappa_adjusted = kappa * (1.0 + 0.5 * curiosity)
