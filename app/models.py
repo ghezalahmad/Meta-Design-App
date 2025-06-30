@@ -451,6 +451,10 @@ def evaluate_maml(meta_model, data, input_columns, target_columns, curiosity, we
             gp.fit(X_train, y_train)
             X_test = unlabeled_data[input_columns].values
             y_pred, y_std = gp.predict(X_test, return_std=True)
+
+            # Ensure GP predictions are non-negative, consistent with NN model outputs
+            y_pred = np.maximum(y_pred, 0)
+
             all_predictions[:, i] = y_pred
             all_uncertainties[:, i] = y_std
             result_df[target_col] = y_pred
@@ -471,6 +475,7 @@ def evaluate_maml(meta_model, data, input_columns, target_columns, curiosity, we
                                                             num_samples=30, dropout_rate=0.3)
 
         predictions = scaler_targets.inverse_transform(predictions_scaled)
+        # Ensure predictions are non-negative, aligning with expected output characteristics.
         predictions = np.maximum(predictions, 0)
 
         result_df = unlabeled_data.copy()
@@ -597,14 +602,17 @@ def calculate_utility_with_acquisition(predictions, uncertainties, novelty, curi
             repeats = int(np.ceil(len(predictions) / len(uncertainties)))
             uncertainties = np.tile(uncertainties, repeats)[:len(predictions)]
     
-    # Define minimum acceptable threshold
+    # Define minimum acceptable threshold.
+    # Predictions below this threshold will have their utility scores heavily penalized.
     min_strength_threshold = 10  
     
-    # Create a mask for rows that have any value below threshold
-    invalid_rows = np.any(predictions < min_strength_threshold, axis=1)
+    # Create a mask for rows that have any value below threshold, based on original predictions.
+    invalid_rows_for_penalty = np.any(predictions < min_strength_threshold, axis=1)
     
-    # Ensure predictions meet minimum thresholds
-    predictions = np.maximum(predictions, min_strength_threshold)
+    # Predictions used for the positive part of utility calculation remain as passed
+    # (they are already >= 0 from the model evaluation stage).
+    # Utility is calculated based on the model's actual (non-negative) predictions.
+    # The penalty for being < min_strength_threshold is applied later to the final utility score.
     
     # Normalize predictions to [0, 1] range
     min_vals = np.min(predictions, axis=0, keepdims=True)
@@ -635,8 +643,8 @@ def calculate_utility_with_acquisition(predictions, uncertainties, novelty, curi
     if acquisition == "UCB":
         utility = weighted_predictions.sum(axis=1, keepdims=True) + curiosity_factor * norm_uncertainties.reshape(-1, 1)
         # Apply penalty to invalid rows (if any)
-        if np.any(invalid_rows):
-            utility[invalid_rows] = -np.inf
+    if np.any(invalid_rows_for_penalty):
+        utility[invalid_rows_for_penalty] = -np.inf
 
     elif acquisition == "EI":
         best_pred = np.max(weighted_predictions.sum(axis=1))
@@ -645,25 +653,25 @@ def calculate_utility_with_acquisition(predictions, uncertainties, novelty, curi
         cdf = 0.5 * (1 + np.tanh(z / np.sqrt(2)))
         pdf = np.exp(-0.5 * z**2) / np.sqrt(2 * np.pi)
         utility = improvement * cdf + norm_uncertainties.reshape(-1, 1) * pdf * curiosity_factor
-        if np.any(invalid_rows):
-            utility[invalid_rows] = -np.inf
+        if np.any(invalid_rows_for_penalty):
+            utility[invalid_rows_for_penalty] = -np.inf
 
     elif acquisition == "PI":
         best_pred = np.max(weighted_predictions.sum(axis=1))
         z = (weighted_predictions.sum(axis=1, keepdims=True) - best_pred) / (norm_uncertainties.reshape(-1, 1) + 1e-10)
         utility = 0.5 * (1 + np.tanh(z / np.sqrt(2)))
-        if np.any(invalid_rows):
-            utility[invalid_rows] = -np.inf
+        if np.any(invalid_rows_for_penalty):
+            utility[invalid_rows_for_penalty] = -np.inf
 
     elif acquisition == "MaxEntropy":
         utility = norm_uncertainties.reshape(-1, 1) + 0.5 * norm_novelty.reshape(-1, 1) * curiosity_factor
-        if np.any(invalid_rows):
-            utility[invalid_rows] = -np.inf
+        if np.any(invalid_rows_for_penalty):
+            utility[invalid_rows_for_penalty] = -np.inf
 
-    else:
+    else: # Default or UCB
         utility = weighted_predictions.sum(axis=1, keepdims=True) + curiosity_factor * norm_uncertainties.reshape(-1, 1)
-        if np.any(invalid_rows):
-            utility[invalid_rows] = -np.inf
+        if np.any(invalid_rows_for_penalty):
+            utility[invalid_rows_for_penalty] = -np.inf
     
     # Sort based on utility (descending)
     sorted_indices = np.argsort(-utility.flatten())  # Sort in descending order
