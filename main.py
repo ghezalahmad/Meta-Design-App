@@ -377,7 +377,38 @@ if data is not None:
                 # Update the input columns to use only the selected features
                 input_columns = selected_features
     
-    # Rest of your code continues...
+    # Input Feature Constraints Configuration
+    if input_columns:
+        st.subheader("Input Feature Constraints (Optional)")
+        if "constraints" not in st.session_state:
+            st.session_state.constraints = {col: {"min": None, "max": None} for col in data.columns}
+
+        expander_constraints = st.expander("Define Min/Max Constraints for Input Features", expanded=False)
+        with expander_constraints:
+            for col in input_columns:
+                # Ensure new columns are added to session state if input_columns change
+                if col not in st.session_state.constraints:
+                     st.session_state.constraints[col] = {"min": None, "max": None}
+
+                c1, c2 = st.columns(2)
+                current_min = st.session_state.constraints[col]["min"]
+                current_max = st.session_state.constraints[col]["max"]
+
+                # Use number_input to allow None or float
+                new_min = c1.number_input(f"Min for {col}:", value=current_min if current_min is not None else np.nan, format="%g", key=f"min_{col}")
+                new_max = c2.number_input(f"Max for {col}:", value=current_max if current_max is not None else np.nan, format="%g", key=f"max_{col}")
+
+                st.session_state.constraints[col]["min"] = None if np.isnan(new_min) else float(new_min)
+                st.session_state.constraints[col]["max"] = None if np.isnan(new_max) else float(new_max)
+
+                # Basic validation: min <= max
+                if st.session_state.constraints[col]["min"] is not None and \
+                   st.session_state.constraints[col]["max"] is not None and \
+                   st.session_state.constraints[col]["min"] > st.session_state.constraints[col]["max"]:
+                    st.warning(f"For {col}, min value cannot be greater than max value. Adjusting max to be equal to min.")
+                    st.session_state.constraints[col]["max"] = st.session_state.constraints[col]["min"]
+                    # Rerun to update the UI element value for max if we corrected it (may not be immediate in Streamlit)
+
 
     # Target Properties Configuration
     if target_columns:
