@@ -231,11 +231,13 @@ def evaluate_reptile(model, data, input_columns, target_columns, curiosity, weig
     
     # Inverse transform predictions to original scale
     predictions = scaler_targets.inverse_transform(predictions_scaled)
-    # 🔒 Ensure non-negative predictions
+    # 🔒 Ensure non-negative predictions, aligning with expected output characteristics.
     predictions = np.maximum(predictions, 0)
 
     # 🚫 Threshold enforcement
+    # Define a minimum acceptable strength/property threshold.
     min_strength_threshold = 10
+    # Identify rows where predictions are below the threshold for utility penalization.
     invalid_rows = np.any(predictions < min_strength_threshold, axis=1)
     
     # Calculate novelty
@@ -315,6 +317,7 @@ def evaluate_reptile(model, data, input_columns, target_columns, curiosity, weig
         )
 
         # 🛑 Apply penalty for invalid predictions
+        # Penalize utility for predictions that fall below the min_strength_threshold.
         if invalid_rows.any():
             utility_scores[invalid_rows] = -np.inf
 
