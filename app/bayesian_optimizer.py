@@ -502,8 +502,9 @@ def bayesian_optimization(train_inputs, train_targets, candidate_inputs, curiosi
     return best_sample_idx
 
 
-def multi_objective_bayesian_optimization(train_inputs, train_targets, candidate_inputs, weights, 
-                                       max_or_min, curiosity=0.0, acquisition="UCB", n_calls=50):
+def multi_objective_bayesian_optimization(train_inputs, train_targets, candidate_inputs, weights,
+                                       max_or_min, curiosity=0.0, acquisition="UCB", n_calls=50,
+                                       strategy="weighted_sum"): # Added strategy
     """
     Perform multi-objective Bayesian optimization for materials discovery.
     
@@ -516,7 +517,7 @@ def multi_objective_bayesian_optimization(train_inputs, train_targets, candidate
     candidate_inputs : numpy.ndarray
         Input features of candidate samples
     weights : numpy.ndarray
-        Importance weights for each objective
+        Importance weights for each objective (used in 'weighted_sum', can influence 'parego' bias or be ignored)
     max_or_min : list
         Direction of optimization for each objective ('max' or 'min')
     curiosity : float
@@ -524,7 +525,9 @@ def multi_objective_bayesian_optimization(train_inputs, train_targets, candidate
     acquisition : str
         Acquisition function type
     n_calls : int
-        Number of optimization iterations
+        Number of optimization iterations (currently not used as it scores candidates)
+    strategy : str
+        'weighted_sum' for fixed weights, 'parego' for random scalarization.
         
     Returns:
     --------
@@ -593,10 +596,25 @@ def multi_objective_bayesian_optimization(train_inputs, train_targets, candidate
     if not models:
         st.warning("Failed to build models for all objectives. Selecting a random sample.")
         return np.random.randint(len(candidate_inputs))
+
+    # Determine effective weights for scalarization
+    if strategy == "parego":
+        # Generate random weights that sum to 1
+        # Using a Dirichlet distribution is common, but a simpler approach for now:
+        # Generate random numbers and normalize.
+        if n_objectives_from_targets > 0 :
+            random_w = np.random.rand(n_objectives_from_targets)
+            effective_weights = random_w / np.sum(random_w)
+            st.info(f"ParEGO strategy: using random weights: {np.round(effective_weights, 3)}")
+        else: # Should not happen if models were built
+            effective_weights = np.array([1.0])
+
+    else: # 'weighted_sum' or default
+        effective_weights = weights
     
     # Compute weighted acquisition function
     acq_values_total = np.zeros(len(candidate_inputs_norm))
-    uncertainty_values_total = np.zeros(len(candidate_inputs_norm))
+    uncertainty_values_total = np.zeros(len(candidate_inputs_norm)) # For potential later use or logging
     
     for i, (model, y_mean, y_std) in enumerate(models):
         # Get prediction and uncertainty
@@ -614,8 +632,9 @@ def multi_objective_bayesian_optimization(train_inputs, train_targets, candidate
             acq_values = -acq_values
         
         # Add weighted acquisition values
-        acq_values_total += weights[i] * acq_values.flatten()
-        uncertainty_values_total += weights[i] * sigma.flatten()
+        current_weight = effective_weights[i]
+        acq_values_total += current_weight * acq_values.flatten()
+        uncertainty_values_total += current_weight * sigma.flatten() # Not directly used for selection but calculated
     
     # Calculate novelty
     novelty_scores = calculate_novelty(candidate_inputs_norm, train_inputs_norm)
