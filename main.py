@@ -65,6 +65,46 @@ st.markdown("""
     This application helps discover optimal material compositions with minimal experiments.
 """)
 
+# --- Experiment State Management ---
+st.sidebar.header("Experiment Management")
+# Load Experiment State
+uploaded_state_file = st.sidebar.file_uploader("Load Experiment State (ZIP)", type=["zip"], key="load_state_uploader")
+if uploaded_state_file is not None:
+    import io
+    import zipfile
+    import json
+    try:
+        with zipfile.ZipFile(uploaded_state_file, "r") as zip_ref:
+            # Load dataset.csv
+            if "dataset.csv" in zip_ref.namelist():
+                with zip_ref.open("dataset.csv") as df_file:
+                    st.session_state.dataset = pd.read_csv(df_file)
+                    st.success("Dataset loaded from state file.")
+                    # To refresh AgGrid and other dependent UI, a rerun might be needed if not immediate.
+                    # Forcing selection of columns based on loaded data might be needed if they were empty.
+            else:
+                st.warning("dataset.csv not found in the uploaded state file.")
+
+            # Load results.csv
+            if "results.csv" in zip_ref.namelist():
+                with zip_ref.open("results.csv") as results_file:
+                    st.session_state.result_df = pd.read_csv(results_file)
+                    st.session_state["experiment_run"] = True # Assume experiment was run if results exist
+                    st.success("Results loaded from state file.")
+
+            # TODO: Load ui_settings.json and repopulate UI elements
+            # TODO: Load model state
+
+        st.sidebar.success("Experiment state partially loaded. Please verify settings.")
+        # Clear the uploader to allow re-upload of same filename if needed, after processing
+        # This can sometimes be tricky with Streamlit's default file_uploader behavior.
+        # A common workaround is to use a button to trigger processing and then clear via a callback or rerun.
+        # For now, we'll rely on user uploading a new file if they want to change.
+
+    except Exception as e:
+        st.sidebar.error(f"Error loading experiment state: {e}")
+
+st.sidebar.header("Model & Data Configuration")
 # Sidebar: Model Selection with improved descriptions
 model_type = st.sidebar.selectbox(
     "Choose Model Type:", 
