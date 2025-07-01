@@ -505,6 +505,27 @@ if data is not None:
             elif not target_columns:
                 st.error("Please select at least one target property.")
             else:
+                # Apply constraints to the data before further processing
+                current_data = data.copy() # Work on a copy
+                if "constraints" in st.session_state and st.session_state.constraints:
+                    constrained_cols_applied = []
+                    for col, bounds in st.session_state.constraints.items():
+                        if col in current_data.columns and col in input_columns: # Apply only to selected input features
+                            if bounds["min"] is not None:
+                                current_data = current_data[current_data[col] >= bounds["min"]]
+                                constrained_cols_applied.append(f"{col} >= {bounds['min']}")
+                            if bounds["max"] is not None:
+                                current_data = current_data[current_data[col] <= bounds["max"]]
+                                constrained_cols_applied.append(f"{col} <= {bounds['max']}")
+                    if constrained_cols_applied:
+                        st.info(f"Applied constraints: {'; '.join(constrained_cols_applied)}. Filtered data from {len(data)} to {len(current_data)} rows.")
+                        if len(current_data) == 0:
+                            st.error("No data remains after applying constraints. Please adjust constraints or data.")
+                            st.stop() # Stop execution if no data left
+
+                # The 'current_data' DataFrame now respects the defined bound constraints.
+                # This filtered data will be passed to the training/evaluation functions.
+
                 st.session_state["experiment_run"] = True
                 
                 # Define max_or_min to avoid None issues
@@ -569,7 +590,7 @@ if data is not None:
                                 
                                 model, scaler_inputs, scaler_targets = meta_train(
                                     meta_model=model, 
-                                    data=data, 
+                                    data=current_data,  # Use constrained data
                                     input_columns=input_columns, 
                                     target_columns=target_columns, 
                                     epochs=meta_epochs // 2,  # Reduce epochs for faster ensemble training
@@ -643,7 +664,7 @@ if data is not None:
                         # Run ensemble predictions
                         result_df, ensemble_info = weighted_uncertainty_ensemble(
                             models_dict, 
-                            data, 
+                            current_data, # Use constrained data
                             input_columns, 
                             target_columns, 
                             acquisition_function=None, 
@@ -670,7 +691,7 @@ if data is not None:
                                 # Train the model
                                 model, scaler_inputs, scaler_targets = meta_train(
                                     meta_model=model, 
-                                    data=data, 
+                                    data=current_data, # Use constrained data
                                     input_columns=input_columns, 
                                     target_columns=target_columns, 
                                     epochs=meta_epochs, 
@@ -686,7 +707,7 @@ if data is not None:
                                 # Evaluate the model
                                 result_df = evaluate_maml(
                                     meta_model=model, 
-                                    data=data, 
+                                    data=current_data, # Use constrained data
                                     input_columns=input_columns, 
                                     target_columns=target_columns, 
                                     curiosity=curiosity, 
@@ -711,7 +732,7 @@ if data is not None:
                                 # Train the model
                                 model, scaler_x, scaler_y = reptile_train(
                                     model, 
-                                    data, 
+                                    current_data, # Use constrained data
                                     input_columns, 
                                     target_columns, 
                                     reptile_epochs, 
@@ -723,7 +744,7 @@ if data is not None:
                                 # Evaluate the model
                                 result_df = evaluate_reptile(
                                     model,
-                                    data,
+                                    current_data, # Use constrained data
                                     input_columns,
                                     target_columns,
                                     curiosity,
@@ -747,7 +768,7 @@ if data is not None:
                                 # Train the model
                                 model, scaler_x, scaler_y = protonet_train(
                                     model, 
-                                    data, 
+                                    current_data, # Use constrained data
                                     input_columns, 
                                     target_columns, 
                                     protonet_epochs, 
@@ -760,7 +781,7 @@ if data is not None:
                                 # Evaluate the model
                                 result_df = evaluate_protonet(
                                     model,
-                                    data,
+                                    current_data, # Use constrained data
                                     input_columns,
                                     target_columns,
                                     curiosity,
@@ -776,7 +797,7 @@ if data is not None:
                             elif model_type == "Random Forest":
                                 # Train the Random Forest model
                                 model, scaler_inputs, scaler_targets = train_rf_model(
-                                    data=data,
+                                    data=current_data, # Use constrained data
                                     input_columns=input_columns,
                                     target_columns=target_columns,
                                     n_estimators=rf_n_estimators, # from sidebar
@@ -790,7 +811,7 @@ if data is not None:
                                 # Evaluate the model
                                 result_df = evaluate_rf_model(
                                     rf_model=model,
-                                    data=data,
+                                    data=current_data, # Use constrained data
                                     input_columns=input_columns,
                                     target_columns=target_columns,
                                     curiosity=curiosity, # from sidebar for RF
@@ -1076,7 +1097,7 @@ if data is not None:
                     # Create model comparison visualization
                     fig = visualize_model_comparison(
                         models_dict, 
-                        data, 
+                        current_data, # Use constrained data for comparison
                         input_columns, 
                         target_columns, 
                         metric=metric
