@@ -7,6 +7,7 @@ import time
 import numpy as np
 import pandas as pd
 from plotly import graph_objects as go
+import joblib # Added for saving/loading sklearn models and scalers
 
 import torch
 import plotly.express as px
@@ -1230,7 +1231,36 @@ if data is not None:
                             st.session_state.result_df.to_csv(csv_buffer_results, index=False)
                             zip_file.writestr("results.csv", csv_buffer_results.getvalue())
 
-                        # TODO: Add model state saving here later (model weights, scalers)
+                        # 4. Save Model State (starting with RF)
+                        import joblib # Ensure joblib is imported (should be at top of file)
+                        model_state_saved = False
+                        if model_type == "Random Forest" and "rf_model" in st.session_state:
+                            if st.session_state.rf_model and getattr(st.session_state.rf_model, 'is_trained', False):
+                                try:
+                                    # Save RF model
+                                    model_buffer = io.BytesIO()
+                                    joblib.dump(st.session_state.rf_model.model, model_buffer) # Save the internal sklearn RF
+                                    zip_file.writestr("model_state/rf_model.joblib", model_buffer.getvalue())
+
+                                    # Save scalers associated with RFModel
+                                    if st.session_state.rf_model.scaler_x:
+                                        scaler_x_buffer = io.BytesIO()
+                                        joblib.dump(st.session_state.rf_model.scaler_x, scaler_x_buffer)
+                                        zip_file.writestr("model_state/rf_scaler_x.joblib", scaler_x_buffer.getvalue())
+
+                                    if st.session_state.rf_model.scaler_y:
+                                        scaler_y_buffer = io.BytesIO()
+                                        joblib.dump(st.session_state.rf_model.scaler_y, scaler_y_buffer)
+                                        zip_file.writestr("model_state/rf_scaler_y.joblib", scaler_y_buffer.getvalue())
+                                    model_state_saved = True
+                                    st.info("Random Forest model state and scalers added to save file.")
+                                except Exception as e:
+                                    st.warning(f"Could not save Random Forest model state: {e}")
+                        # TODO: Add saving for PyTorch models (MAML, Reptile, ProtoNet) state_dict and scalers
+                        # TODO: Add saving for GPR fallback model if it was used/is in session_state
+
+                        if not model_state_saved:
+                            st.info("Model state not saved (either model not trained, not RF, or not yet supported for saving).")
 
                     zip_buffer.seek(0)
                     st.download_button(
