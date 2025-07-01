@@ -97,6 +97,15 @@ if "loaded_ui_settings" in st.session_state and st.session_state.loaded_ui_setti
     # The actual curiosity value used by the app will be set when the specific model's UI is rendered
     st.session_state.curiosity_loaded_value = loaded_settings.get("curiosity", 0.0)
 
+    # Load Model State (after UI settings like model_type are known)
+    # This requires the ZIP file to be accessible here, which it isn't directly after a rerun.
+    # The model loading needs to happen INSIDE the `if uploaded_state_file is not None:` block,
+    # before the rerun, using the zip_ref. This was a flaw in my previous reasoning.
+
+    # Let's correct the flow: Model loading must happen within the ZIP processing block.
+    # The `loaded_settings` dictionary is ALREADY available there if `ui_settings.json` was read.
+    # The `st.experimental_rerun()` should happen AFTER ALL loading (dataset, results, ui_settings, model).
+
     # Clear the main loaded_settings dict and the specific 'loaded_value' flags
     # to prevent them from interfering with subsequent user interactions or reruns.
     del st.session_state.loaded_ui_settings
@@ -155,16 +164,58 @@ if uploaded_state_file is not None:
                     st.session_state["experiment_run"] = True # Assume experiment was run if results exist
                     st.success("Results loaded from state file.")
 
+            ui_settings_loaded_for_model = None
             if "ui_settings.json" in zip_ref.namelist():
                 with zip_ref.open("ui_settings.json") as settings_file:
-                    st.session_state.loaded_ui_settings = json.load(settings_file)
-                st.success("UI settings parsed from state file. Rerunning to apply...")
-                st.experimental_rerun() # Force a rerun to apply settings
+                    ui_settings_loaded_for_model = json.load(settings_file) # Load into a local var first
+                    st.session_state.loaded_ui_settings = ui_settings_loaded_for_model # Then into session_state for rerun UI population
+                st.success("UI settings parsed from state file.")
 
-            # TODO: Load model state
+            # Load Model State (e.g., Random Forest)
+            if ui_settings_loaded_for_model: # Check if we have settings to know model type
+                model_type_to_load = ui_settings_loaded_for_model.get("model_type")
+                if model_type_to_load == "Random Forest":
+                    try:
+                        if "model_state/rf_model.joblib" in zip_ref.namelist() and \
+                           "model_state/rf_scaler_x.joblib" in zip_ref.namelist() and \
+                           "model_state/rf_scaler_y.joblib" in zip_ref.namelist():
 
-        # This message might be shown briefly before rerun
-        st.sidebar.success("Experiment state files processed. UI should update on rerun.")
+                            with zip_ref.open("model_state/rf_model.joblib") as mf:
+                                loaded_rf_sklearn_model = joblib.load(mf)
+                            with zip_ref.open("model_state/rf_scaler_x.joblib") as sf_x:
+                                loaded_scaler_x = joblib.load(sf_x)
+                            with zip_ref.open("model_state/rf_scaler_y.joblib") as sf_y:
+                                loaded_scaler_y = joblib.load(sf_y)
+
+                            from app.rf_model import RFModel # Ensure import
+                            reconstructed_rf_model = RFModel() # Use default params from class
+                            # Apply loaded hyperparameters if they were saved and are part of ui_settings_loaded_for_model
+                            reconstructed_rf_model.model.set_params(
+                                n_estimators=ui_settings_loaded_for_model.get("rf_n_estimators", reconstructed_rf_model.model.get_params()["n_estimators"])
+                                # Add other relevant RF params here if they were saved in ui_settings
+                            )
+                            reconstructed_rf_model.model = loaded_rf_sklearn_model # The actual fitted model
+                            reconstructed_rf_model.scaler_x = loaded_scaler_x
+                            reconstructed_rf_model.scaler_y = loaded_scaler_y
+                            reconstructed_rf_model.is_trained = True
+
+                            st.session_state.rf_model = reconstructed_rf_model
+                            st.session_state.model = reconstructed_rf_model # Generic holder
+                            # These might not be strictly necessary if rf_model holds them
+                            st.session_state.rf_scaler_inputs = loaded_scaler_x
+                            st.session_state.rf_scaler_targets = loaded_scaler_y
+                            st.success("Random Forest model state loaded successfully.")
+                        else:
+                            st.warning("Random Forest model state files not found in ZIP, though model type was RF.")
+                    except Exception as e:
+                        st.error(f"Error loading Random Forest model state: {e}")
+                # TODO: Add loading for PyTorch models (MAML, Reptile, ProtoNet)
+
+            if "loaded_ui_settings" in st.session_state: # If UI settings were loaded, trigger rerun
+                st.experimental_rerun()
+
+        # This message might appear before rerun fully updates UI
+        st.sidebar.success("Experiment state files processed. UI should update on rerun if settings were loaded.")
         # Clear the uploader to allow re-upload of same filename if needed, after processing
         # This can sometimes be tricky with Streamlit's default file_uploader behavior.
         # A common workaround is to use a button to trigger processing and then clear via a callback or rerun.
