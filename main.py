@@ -52,6 +52,68 @@ from app.bayesian_optimizer import (
 # Set random seed for reproducibility
 set_seed(42)
 
+# Process loaded UI settings if available (after a state file upload and rerun)
+if "loaded_ui_settings" in st.session_state and st.session_state.loaded_ui_settings is not None:
+    loaded_settings = st.session_state.loaded_ui_settings.copy() # Work with a copy
+    st.info("Applying loaded UI settings...")
+
+    # These keys will be used to set defaults for column selection multiselects later
+    st.session_state.input_columns_loaded_from_file = loaded_settings.get("input_columns", [])
+    st.session_state.target_columns_loaded_from_file = loaded_settings.get("target_columns", [])
+    st.session_state.apriori_columns_loaded_from_file = loaded_settings.get("apriori_columns", [])
+
+    # Model type (widget key is 'model_type_selector' - defined later by the selectbox itself)
+    # So, we set the value that the selectbox will use for its 'index' or initial state.
+    # The selectbox will be: model_type = st.sidebar.selectbox(..., key="model_type_selector")
+    # We need to ensure the widget is defined such that it can pick this up or we set its state.
+    # For selectbox, it's often easier to set its default list variable.
+    # Let's assume the selectbox for model_type will use st.session_state.model_type_selector if it exists.
+    st.session_state.model_type_selector_loaded_value = loaded_settings.get("model_type", "MAML")
+
+
+    # Constraints - these session_state keys are directly used by the constraint UI
+    st.session_state.constraints = loaded_settings.get("constraints", {})
+    st.session_state.sum_constraint_cols = loaded_settings.get("sum_constraint_cols", [])
+    st.session_state.sum_constraint_target = loaded_settings.get("sum_constraint_target", 1.0)
+    st.session_state.sum_constraint_tolerance = loaded_settings.get("sum_constraint_tolerance", 0.01)
+
+    # MOBO Strategy (widget key is 'mobo_strategy_selector')
+    st.session_state.mobo_strategy_selector_loaded_value = loaded_settings.get("mobo_strategy", "weighted_sum")
+
+    # Model Hyperparameters & Curiosity (using their widget keys directly)
+    # This relies on the keys in ui_settings.json matching the keys used in st.slider/st.checkbox etc.
+    # Generic curiosity is saved as "curiosity". Model specific sliders use keys like "maml_curiosity", "rf_curiosity" etc.
+    # We also save model specific params like "maml_hidden_size", "rf_n_estimators"
+
+    # Store all loaded settings that are not column selections or complex ones like curiosity
+    # These will be picked up by widgets if their keys match.
+    for key, value in loaded_settings.items():
+        if key not in ["input_columns", "target_columns", "apriori_columns", "model_type", "mobo_strategy", "constraints",
+                       "sum_constraint_cols", "sum_constraint_target", "sum_constraint_tolerance", "curiosity"]:
+            st.session_state[key] = value
+
+    # Handle curiosity separately as its key is dynamic in the UI
+    # The actual curiosity value used by the app will be set when the specific model's UI is rendered
+    st.session_state.curiosity_loaded_value = loaded_settings.get("curiosity", 0.0)
+
+    # Clear the main loaded_settings dict and the specific 'loaded_value' flags
+    # to prevent them from interfering with subsequent user interactions or reruns.
+    del st.session_state.loaded_ui_settings
+    # Specific loaded flags will be cleared by widgets themselves or we can clear them here if widgets don't automatically.
+    # For now, relying on widgets to use these values for their current run and then operate normally.
+    # If a widget's default is continuously overridden, then explicit deletion of the specific _loaded_value key is needed
+    # after the widget definition. Given the current setup, most widgets should be okay.
+    # Let's explicitly clear the ones we created for selectbox defaults to be safe.
+    if "model_type_selector_loaded_value" in st.session_state:
+        del st.session_state.model_type_selector_loaded_value
+    if "mobo_strategy_selector_loaded_value" in st.session_state:
+        del st.session_state.mobo_strategy_selector_loaded_value
+    # input/target/apriori columns loaded_from_file are cleared after their multiselects are defined.
+    # curiosity_loaded_value will be used by sliders and then normal session_state takes over for the slider's key.
+
+    st.info("Loaded UI settings have been applied.")
+
+
 # Set up directories
 UPLOAD_FOLDER = "uploads"
 RESULT_FOLDER = "results"
@@ -92,10 +154,16 @@ if uploaded_state_file is not None:
                     st.session_state["experiment_run"] = True # Assume experiment was run if results exist
                     st.success("Results loaded from state file.")
 
-            # TODO: Load ui_settings.json and repopulate UI elements
+            if "ui_settings.json" in zip_ref.namelist():
+                with zip_ref.open("ui_settings.json") as settings_file:
+                    st.session_state.loaded_ui_settings = json.load(settings_file)
+                st.success("UI settings parsed from state file. Rerunning to apply...")
+                st.experimental_rerun() # Force a rerun to apply settings
+
             # TODO: Load model state
 
-        st.sidebar.success("Experiment state partially loaded. Please verify settings.")
+        # This message might be shown briefly before rerun
+        st.sidebar.success("Experiment state files processed. UI should update on rerun.")
         # Clear the uploader to allow re-upload of same filename if needed, after processing
         # This can sometimes be tricky with Streamlit's default file_uploader behavior.
         # A common workaround is to use a button to trigger processing and then clear via a callback or rerun.
@@ -106,9 +174,20 @@ if uploaded_state_file is not None:
 
 st.sidebar.header("Model & Data Configuration")
 # Sidebar: Model Selection with improved descriptions
+# Determine initial index for model_type selectbox if loaded from state
+model_options = ["MAML", "Reptile", "ProtoNet", "Random Forest"]
+default_model_type = "MAML"
+if "model_type_selector_loaded_value" in st.session_state:
+    default_model_type = st.session_state.model_type_selector_loaded_value
+    # Clear it after use to prevent it from always overriding user selection on normal reruns
+    # del st.session_state.model_type_selector_loaded_value # Let's not delete, subsequent widgets might need it as context
+model_idx = model_options.index(default_model_type) if default_model_type in model_options else 0
+
 model_type = st.sidebar.selectbox(
     "Choose Model Type:", 
-    ["MAML", "Reptile", "ProtoNet", "Random Forest"],
+    options=model_options,
+    index=model_idx,
+    key="model_type_selector", # Ensure a key is set
     help="""
     Select the meta-learning model for material mix optimization:
     - MAML (Model-Agnostic Meta-Learning): Adapts rapidly to new tasks with gradient-based adaptation.
@@ -174,7 +253,14 @@ if model_type == "MAML":
         
         num_tasks = st.slider("Number of Tasks:", 2, 10, defaults["num_tasks"], 1)
     
-    curiosity = st.slider("Exploit (-2) vs Explore (+2)", -2.0, 2.0, defaults["curiosity"], 0.1)
+    default_curiosity = defaults["curiosity"]
+    if "curiosity_loaded_value" in st.session_state:
+        default_curiosity = st.session_state.curiosity_loaded_value
+        # del st.session_state.curiosity_loaded_value # Clear after use for this section
+        # Decided not to delete yet, as other model sections might need it if model_type changes after load.
+        # It will be naturally overridden if user interacts with a specific curiosity slider.
+
+    curiosity = st.slider("Exploit (-2) vs Explore (+2)", -2.0, 2.0, default_curiosity, 0.1, key="maml_curiosity") # Added key
     if curiosity < -1.0:
         st.info("Current strategy: Strong exploitation - focusing on known good regions")
     elif curiosity < 0:
@@ -203,7 +289,10 @@ elif model_type == "Reptile":
         reptile_epochs = st.slider("Training Epochs:", 10, 300, defaults["reptile_epochs"], 10)
         reptile_num_tasks = st.slider("Number of Tasks:", 2, 10, defaults["reptile_num_tasks"], 1)
         
-        curiosity = st.slider("Exploit (-2) vs Explore (+2)", -2.0, 2.0, defaults["curiosity"], 0.1)
+        default_curiosity = defaults["curiosity"]
+        if "curiosity_loaded_value" in st.session_state:
+            default_curiosity = st.session_state.curiosity_loaded_value
+        curiosity = st.slider("Exploit (-2) vs Explore (+2)", -2.0, 2.0, default_curiosity, 0.1, key="reptile_curiosity") # Added key
         strict_optimization = st.checkbox("Strict Optimization Direction", value=True)
         
         if curiosity < -1.0:
@@ -234,8 +323,11 @@ elif model_type == "ProtoNet":
         protonet_num_tasks = st.slider("Number of Tasks:", 2, 10, defaults["protonet_num_tasks"], 1)
         num_shot = st.slider("Support Samples (N-shot):", 1, 8, 4, 1)
         num_query = st.slider("Query Samples:", 1, 8, 4, 1)
-    
-    curiosity = st.slider("Exploit (-2) vs Explore (+2)", -2.0, 2.0, defaults["curiosity"], 0.1)
+
+    default_curiosity = defaults["curiosity"]
+    if "curiosity_loaded_value" in st.session_state:
+        default_curiosity = st.session_state.curiosity_loaded_value
+    curiosity = st.slider("Exploit (-2) vs Explore (+2)", -2.0, 2.0, default_curiosity, 0.1, key="protonet_curiosity") # Added key
     if curiosity < -1.0:
         st.info("Current strategy: Strong exploitation - focusing on known good regions")
     elif curiosity < 0:
@@ -253,7 +345,10 @@ elif model_type == "Random Forest":
         # For now, keeping it simple.
         rf_perform_grid_search = st.checkbox("Perform GridSearchCV (slower)", value=False, key="rf_grid_search")
 
-    curiosity = st.slider("Exploit (-2) vs Explore (+2)", -2.0, 2.0, defaults["curiosity"], 0.1, key="rf_curiosity")
+    default_curiosity = defaults["curiosity"]
+    if "curiosity_loaded_value" in st.session_state:
+        default_curiosity = st.session_state.curiosity_loaded_value
+    curiosity = st.slider("Exploit (-2) vs Explore (+2)", -2.0, 2.0, default_curiosity, 0.1, key="rf_curiosity")
     if curiosity < -1.0:
         st.info("Current strategy: Strong exploitation - focusing on known good regions")
     elif curiosity < 0:
@@ -359,29 +454,56 @@ data = load_and_edit_dataset()
 if data is not None:    
     # Data columns selection with improved UI
     col1, col2, col3 = st.columns(3)
+
+    # Initialize loaded column selections in session_state if not already there (e.g., on first run without loading)
+    if "input_columns_loaded_from_file" not in st.session_state:
+        st.session_state.input_columns_loaded_from_file = []
+    if "target_columns_loaded_from_file" not in st.session_state:
+        st.session_state.target_columns_loaded_from_file = []
+    if "apriori_columns_loaded_from_file" not in st.session_state:
+        st.session_state.apriori_columns_loaded_from_file = []
     
     with col1:
+        # Ensure defaults are valid options from the current dataset
+        valid_default_input_cols = [col for col in st.session_state.input_columns_loaded_from_file if col in data.columns]
         input_columns = st.multiselect(
             "Input Features:", 
             options=data.columns.tolist(),
+            default=valid_default_input_cols, # Use loaded value
+            key="input_columns_multiselect",
             help="Select the material composition variables"
         )
     
     with col2:
-        remaining_cols = [col for col in data.columns if col not in input_columns]
+        remaining_cols_for_target = [col for col in data.columns if col not in input_columns]
+        valid_default_target_cols = [col for col in st.session_state.target_columns_loaded_from_file if col in remaining_cols_for_target]
         target_columns = st.multiselect(
             "Target Properties:", 
-            options=remaining_cols,
+            options=remaining_cols_for_target,
+            default=valid_default_target_cols, # Use loaded value
+            key="target_columns_multiselect",
             help="Select the material properties you want to optimize"
         )
     
     with col3:
-        remaining_cols = [col for col in data.columns if col not in input_columns + target_columns]
+        remaining_cols_for_apriori = [col for col in data.columns if col not in input_columns + target_columns]
+        valid_default_apriori_cols = [col for col in st.session_state.apriori_columns_loaded_from_file if col in remaining_cols_for_apriori]
         apriori_columns = st.multiselect(
             "A Priori Properties:", 
-            options=remaining_cols,
+            options=remaining_cols_for_apriori,
+            default=valid_default_apriori_cols, # Use loaded value
+            key="apriori_columns_multiselect",
             help="Select properties with known values that constrain the optimization"
         )
+
+    # Clear loaded column selections after first use to allow user to change them without being overridden on next rerun
+    if "input_columns_loaded_from_file" in st.session_state and st.session_state.input_columns_loaded_from_file:
+        st.session_state.input_columns_loaded_from_file = [] # Clear after use
+    if "target_columns_loaded_from_file" in st.session_state and st.session_state.target_columns_loaded_from_file:
+        st.session_state.target_columns_loaded_from_file = []
+    if "apriori_columns_loaded_from_file" in st.session_state and st.session_state.apriori_columns_loaded_from_file:
+        st.session_state.apriori_columns_loaded_from_file = []
+
 
     # ADD FEATURE SELECTION CODE HERE - after user selections but before model initialization
     if len(input_columns) > 0 and len(target_columns) > 0:
@@ -491,11 +613,18 @@ if data is not None:
 
         # Multi-objective strategy selection
         mobo_strategy = "weighted_sum" # Default
+        default_mobo_strategy = "weighted_sum"
+        if "mobo_strategy_selector_loaded_value" in st.session_state:
+            default_mobo_strategy = st.session_state.mobo_strategy_selector_loaded_value
+            # del st.session_state.mobo_strategy_selector_loaded_value # Clear after use
+
         if len(target_columns) > 1:
+            mobo_options = ["weighted_sum", "parego"]
+            mobo_idx = mobo_options.index(default_mobo_strategy) if default_mobo_strategy in mobo_options else 0
             mobo_strategy = st.selectbox(
                 "Multi-Objective Strategy:",
-                options=["weighted_sum", "parego"],
-                index=0,
+                options=mobo_options,
+                index=mobo_idx,
                 format_func=lambda x: "Weighted Sum (Fixed Weights)" if x == "weighted_sum" else "ParEGO (Randomized Weights)",
                 help="Choose how to handle multiple objectives. ParEGO can help explore non-convex Pareto fronts.",
                 key="mobo_strategy_selector"
