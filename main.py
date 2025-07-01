@@ -409,6 +409,41 @@ if data is not None:
                     st.session_state.constraints[col]["max"] = st.session_state.constraints[col]["min"]
                     # Rerun to update the UI element value for max if we corrected it (may not be immediate in Streamlit)
 
+            st.markdown("---") # Separator
+            st.markdown("##### Define Sum Constraint (e.g., for compositional data sum to 1 or 100)")
+
+            if "sum_constraint_cols" not in st.session_state:
+                st.session_state.sum_constraint_cols = []
+            if "sum_constraint_target" not in st.session_state:
+                st.session_state.sum_constraint_target = 1.0 # Default to 1.0, common for proportions
+            if "sum_constraint_tolerance" not in st.session_state:
+                st.session_state.sum_constraint_tolerance = 0.01 # Default tolerance
+
+            selected_sum_cols = st.multiselect(
+                "Select features for sum constraint:",
+                options=input_columns,
+                default=st.session_state.sum_constraint_cols,
+                key="sum_constraint_features_multiselect"
+            )
+            st.session_state.sum_constraint_cols = selected_sum_cols
+
+            target_sum_val = st.number_input(
+                "Target sum for selected features:",
+                value=st.session_state.sum_constraint_target,
+                format="%g",
+                key="sum_constraint_target_value"
+            )
+            st.session_state.sum_constraint_target = float(target_sum_val) if target_sum_val is not None else None
+
+            target_sum_tolerance = st.number_input(
+                "Tolerance for sum constraint (e.g., +/- 0.01):",
+                value=st.session_state.sum_constraint_tolerance,
+                min_value=0.0,
+                format="%g",
+                key="sum_constraint_tolerance_value"
+            )
+            st.session_state.sum_constraint_tolerance = float(target_sum_tolerance) if target_sum_tolerance is not None else 0.0
+
 
     # Target Properties Configuration
     if target_columns:
@@ -520,10 +555,41 @@ if data is not None:
                     if constrained_cols_applied:
                         st.info(f"Applied constraints: {'; '.join(constrained_cols_applied)}. Filtered data from {len(data)} to {len(current_data)} rows.")
                         if len(current_data) == 0:
-                            st.error("No data remains after applying constraints. Please adjust constraints or data.")
+                            st.error("No data remains after applying bound constraints. Please adjust constraints or data.")
                             st.stop() # Stop execution if no data left
 
-                # The 'current_data' DataFrame now respects the defined bound constraints.
+                # Apply sum constraint if defined and data still exists
+                if len(current_data) > 0 and \
+                   "sum_constraint_cols" in st.session_state and \
+                   st.session_state.sum_constraint_cols and \
+                   st.session_state.sum_constraint_target is not None:
+
+                    sum_cols = st.session_state.sum_constraint_cols
+                    target_sum = st.session_state.sum_constraint_target
+                    tolerance = st.session_state.sum_constraint_tolerance
+
+                    # Ensure all selected sum_cols are actually in current_data (they should be if they are input_columns)
+                    valid_sum_cols = [col for col in sum_cols if col in current_data.columns]
+                    if len(valid_sum_cols) == len(sum_cols) and len(valid_sum_cols) > 0: # All selected cols are valid
+                        actual_sums = current_data[valid_sum_cols].sum(axis=1)
+                        lower_bound = target_sum - tolerance
+                        upper_bound = target_sum + tolerance
+
+                        original_len_before_sum_filter = len(current_data)
+                        current_data = current_data[
+                            (actual_sums >= lower_bound) & (actual_sums <= upper_bound)
+                        ]
+
+                        if len(current_data) < original_len_before_sum_filter:
+                             st.info(f"Applied sum constraint ({', '.join(valid_sum_cols)} sum to be approx {target_sum} +/- {tolerance}). Filtered data from {original_len_before_sum_filter} to {len(current_data)} rows.")
+
+                        if len(current_data) == 0:
+                            st.error("No data remains after applying sum constraint. Please adjust constraints or data.")
+                            st.stop()
+                    elif len(sum_cols) > 0 : # Some selected columns for sum are not valid / not found
+                        st.warning(f"Could not apply sum constraint: Not all selected features ({', '.join(sum_cols)}) are available in the data for summing.")
+
+                # The 'current_data' DataFrame now respects defined bound and sum constraints.
                 # This filtered data will be passed to the training/evaluation functions.
 
                 st.session_state["experiment_run"] = True
