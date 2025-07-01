@@ -990,9 +990,92 @@ if data is not None:
             
         # Add a clear model history button
         if st.button("Clear Model History", key="clear_history", use_container_width=True):
-            st.session_state["model_history"] = {}
+            st.session_state["model_history"] = {} # Note: model_history itself is not part of the saved state yet
             st.success("Model history cleared!")
             st.experimental_rerun()
+
+        # Save Experiment State Button
+        if st.button("Save Experiment State", key="save_experiment_state", use_container_width=True):
+            if "dataset" in st.session_state and st.session_state.dataset is not None:
+                import io
+                import zipfile
+                import json
+
+                try:
+                    zip_buffer = io.BytesIO()
+                    with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
+                        # 1. Save dataset
+                        csv_buffer = io.StringIO()
+                        st.session_state.dataset.to_csv(csv_buffer, index=False)
+                        zip_file.writestr("dataset.csv", csv_buffer.getvalue())
+
+                        # 2. Save UI settings
+                        ui_settings = {
+                            "input_columns": input_columns, # These are from current UI state, not necessarily session_state directly
+                            "target_columns": target_columns,
+                            "apriori_columns": apriori_columns,
+                            "model_type": model_type,
+                            "curiosity": curiosity,
+                            "constraints": st.session_state.get("constraints"),
+                            "sum_constraint_cols": st.session_state.get("sum_constraint_cols"),
+                            "sum_constraint_target": st.session_state.get("sum_constraint_target"),
+                            "sum_constraint_tolerance": st.session_state.get("sum_constraint_tolerance"),
+                            "mobo_strategy": mobo_strategy if len(target_columns) > 1 else "weighted_sum",
+                            # Add model-specific hyperparameters by checking model_type
+                        }
+                        if model_type == "MAML":
+                            ui_settings["maml_hidden_size"] = hidden_size
+                            ui_settings["maml_num_layers"] = num_layers
+                            ui_settings["maml_dropout_rate"] = dropout_rate
+                            ui_settings["maml_inner_lr"] = inner_lr
+                            ui_settings["maml_inner_lr_decay"] = inner_lr_decay
+                            ui_settings["maml_outer_lr"] = outer_lr
+                            ui_settings["maml_meta_epochs"] = meta_epochs
+                            ui_settings["maml_num_tasks"] = num_tasks
+                        elif model_type == "Reptile":
+                            ui_settings["reptile_hidden_size"] = hidden_size
+                            ui_settings["reptile_num_layers"] = num_layers
+                            ui_settings["reptile_dropout_rate"] = dropout_rate
+                            ui_settings["reptile_learning_rate"] = reptile_learning_rate
+                            ui_settings["reptile_epochs"] = reptile_epochs
+                            ui_settings["reptile_num_tasks"] = reptile_num_tasks
+                            # ui_settings["reptile_batch_size"] = batch_size # if defined
+                        elif model_type == "ProtoNet":
+                            ui_settings["protonet_embedding_size"] = embedding_size
+                            ui_settings["protonet_num_layers"] = num_layers
+                            ui_settings["protonet_dropout_rate"] = dropout_rate
+                            ui_settings["protonet_learning_rate"] = protonet_learning_rate
+                            ui_settings["protonet_epochs"] = protonet_epochs
+                            ui_settings["protonet_num_tasks"] = protonet_num_tasks
+                            ui_settings["protonet_num_shot"] = num_shot
+                            ui_settings["protonet_num_query"] = num_query
+                        elif model_type == "Random Forest":
+                            ui_settings["rf_n_estimators"] = rf_n_estimators
+                            ui_settings["rf_perform_grid_search"] = rf_perform_grid_search
+
+                        zip_file.writestr("ui_settings.json", json.dumps(ui_settings, indent=4))
+
+                        # 3. Save last result_df
+                        if "result_df" in st.session_state and st.session_state.result_df is not None:
+                            csv_buffer_results = io.StringIO()
+                            st.session_state.result_df.to_csv(csv_buffer_results, index=False)
+                            zip_file.writestr("results.csv", csv_buffer_results.getvalue())
+
+                        # TODO: Add model state saving here later (model weights, scalers)
+
+                    zip_buffer.seek(0)
+                    st.download_button(
+                        label="Download Experiment State (ZIP)",
+                        data=zip_buffer,
+                        file_name="metadesign_experiment_state.zip",
+                        mime="application/zip"
+                    )
+                    st.success("Experiment state prepared for download.")
+                except Exception as e:
+                    st.error(f"Error saving experiment state: {e}")
+            else:
+                st.warning("No dataset loaded to save state.")
+
 
     # Show visualization based on selection
     if st.session_state["experiment_run"] and "result_df" in st.session_state:  
