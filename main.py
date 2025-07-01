@@ -448,6 +448,18 @@ if data is not None:
     # Target Properties Configuration
     if target_columns:
         st.subheader("Properties Configuration")
+
+        # Multi-objective strategy selection
+        mobo_strategy = "weighted_sum" # Default
+        if len(target_columns) > 1:
+            mobo_strategy = st.selectbox(
+                "Multi-Objective Strategy:",
+                options=["weighted_sum", "parego"],
+                index=0,
+                format_func=lambda x: "Weighted Sum (Fixed Weights)" if x == "weighted_sum" else "ParEGO (Randomized Weights)",
+                help="Choose how to handle multiple objectives. ParEGO can help explore non-convex Pareto fronts.",
+                key="mobo_strategy_selector"
+            )
         
         max_or_min_targets, weights_targets, thresholds_targets = [], [], []
         max_or_min_apriori, weights_apriori, thresholds_apriori = [], [], []
