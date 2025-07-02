@@ -770,7 +770,6 @@ def multi_objective_bayesian_optimization(train_inputs, train_targets, candidate
     if curiosity > 0:
         acq_values_total += 0.2 * curiosity * novelty_scores
     
-    # Get best candidate index
-    best_sample_idx = np.argmax(acq_values_total)
-    
-    return best_sample_idx
+    # Return all acquisition scores instead of just the index of the best
+    # The calling function (in main.py) will handle selecting the best and populating result_df.
+    return acq_values_total.flatten()
