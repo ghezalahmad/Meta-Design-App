@@ -64,6 +64,72 @@ class ReptileModel(nn.Module):
         
         # Output prediction - no activation to allow full range
         return self.output_layer(h)
+
+    def predict_with_uncertainty(self, X_df_original_scale: pd.DataFrame, input_columns: list[str], num_perturbations=50, noise_scale=0.1, dropout_rate=0.3):
+        """
+        Makes predictions and estimates uncertainty.
+        Assumes the model has been trained and scalers (self.scaler_x, self.scaler_y) are set.
+
+        Args:
+            X_df_original_scale (pd.DataFrame): DataFrame with input features in their original scale.
+            input_columns (list[str]): List of input feature column names to use.
+            num_perturbations (int): Number of Monte Carlo samples for uncertainty estimation.
+            noise_scale (float): Scale of Gaussian noise for input perturbation for uncertainty.
+            dropout_rate (float): Dropout rate to use during MC sampling for uncertainty.
+
+        Returns:
+            tuple: (mean_predictions_original_scale, std_dev_original_scale_per_sample)
+                   mean_predictions_original_scale (np.ndarray): Predictions in the original target scale.
+                   std_dev_original_scale_per_sample (np.ndarray): Standard deviation of predictions (per sample) in original target scale.
+        """
+        if not getattr(self, 'is_trained', False) or self.scaler_x is None or self.scaler_y is None:
+            raise RuntimeError("Model is not trained yet or scalers are missing. Call reptile_train first.")
+
+        self.eval() # Ensure model is in eval mode for mean prediction
+
+        X_processed = X_df_original_scale[input_columns]
+        X_scaled_np = self.scaler_x.transform(X_processed)
+        X_tensor = torch.tensor(X_scaled_np, dtype=torch.float32)
+
+        # Get mean predictions (scaled)
+        with torch.no_grad():
+            mean_predictions_scaled = self(X_tensor).numpy() # self.forward(X_tensor)
+
+        # Inverse transform mean predictions
+        mean_predictions_original_scale = self.scaler_y.inverse_transform(mean_predictions_scaled)
+
+        # Get uncertainty (variance-like, scaled) using app.utils.calculate_uncertainty
+        # This function handles setting model.train() for dropout etc.
+        from app.utils import calculate_uncertainty as util_calc_uncertainty # alias to avoid conflict
+
+        # calculate_uncertainty returns a per-sample variance-like value (already averaged if multi-target)
+        variance_scaled_per_sample = util_calc_uncertainty(
+            self, X_tensor,
+            num_perturbations=num_perturbations,
+            noise_scale=noise_scale,
+            dropout_rate=dropout_rate
+        ) # Shape (n_samples, 1)
+
+        # Inverse transform uncertainty (variance -> std_dev)
+        # scaler_y.scale_ is an array of scales for each target feature
+        # Variance scales by scale_factor^2
+        scale_sq = self.scaler_y.scale_ ** 2
+
+        # Since util_calc_uncertainty already averages for multi-target,
+        # we use the mean of squared scales for consistency if scaler_y was multi-target.
+        # If scaler_y was single-target, scale_sq is scalar.
+        if variance_scaled_per_sample.shape[1] == 1:
+            mean_scale_sq = np.mean(scale_sq) if len(scale_sq) > 0 else 1.0
+            variance_original_scale = variance_scaled_per_sample * mean_scale_sq
+        else: # Should not happen with current app.utils.calculate_uncertainty
+            st.warning("Unexpected shape for variance_scaled_per_sample in ReptileModel. Using mean scale.")
+            mean_scale_sq = np.mean(scale_sq) if len(scale_sq) > 0 else 1.0
+            variance_original_scale = variance_scaled_per_sample * mean_scale_sq
+
+
+        std_dev_original_scale_per_sample = np.sqrt(np.maximum(variance_original_scale, 1e-12)) # ensure non-negative before sqrt
+
+        return mean_predictions_original_scale, std_dev_original_scale_per_sample.reshape(-1, 1)
     
 def reptile_train(model, data, input_columns, target_columns, epochs, learning_rate, num_tasks, **kwargs):
     
@@ -190,6 +256,10 @@ def reptile_train(model, data, input_columns, target_columns, epochs, learning_r
         print(f"Extrapolation factor: {extrapolation_factor:.2f}x")
         if extrapolation_factor < 1.2:
             print("⚠️ Model has limited extrapolation capability. SLAMD would typically achieve 1.5-2.0x")
+
+    model.is_trained = True
+    model.scaler_x = scaler_x
+    model.scaler_y = scaler_y
     
     return model, scaler_x, scaler_y
 

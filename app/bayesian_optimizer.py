@@ -7,6 +7,23 @@ from sklearn.gaussian_process.kernels import RBF, Matern, ConstantKernel, WhiteK
 import streamlit as st
 from app.utils import enforce_diversity, calculate_novelty
 
+# Module-level helper functions for acquisition calculations
+def _calculate_ucb(mu, sigma, kappa_adjusted):
+    return mu + kappa_adjusted * sigma
+
+def _calculate_ei(mu, sigma, y_max_of_current_obj, xi_adjusted):
+    sigma_safe = np.maximum(sigma, 1e-9) # Avoid division by zero / sqrt of negative
+    imp = mu - y_max_of_current_obj - xi_adjusted
+    z = imp / sigma_safe
+    ei = imp * norm.cdf(z) + sigma_safe * norm.pdf(z)
+    ei[imp < 0] = 0.0 # Expected improvement cannot be negative
+    return ei
+
+def _calculate_pi(mu, sigma, y_max_of_current_obj, xi_adjusted):
+    sigma_safe = np.maximum(sigma, 1e-9)
+    z = (mu - y_max_of_current_obj - xi_adjusted) / sigma_safe
+    return norm.cdf(z)
+
 
 class BayesianOptimizer:
     """
@@ -173,37 +190,59 @@ class BayesianOptimizer:
         if self.surrogate_model:
             # Assuming surrogate_model.predict_with_uncertainty expects X and input_columns (if it's like RFModel)
             # The input_columns can be derived from self.bounds if set during optimize, or self.X_train
-            input_columns = None
-            if self.bounds: # Primarily for the .optimize() method that works in continuous space
-                input_columns = list(self.bounds.keys())
-            elif self.X_train_df_columns: # From data passed to .fit()
-                input_columns = self.X_train_df_columns
+            input_cols = None
+            # Try to get input_columns from the surrogate's scaler first, then from BO's context
+            if hasattr(self.surrogate_model, 'scaler_x') and self.surrogate_model.scaler_x and \
+               hasattr(self.surrogate_model.scaler_x, 'feature_names_in_') and \
+               self.surrogate_model.scaler_x.feature_names_in_ is not None:
+                input_cols = self.surrogate_model.scaler_x.feature_names_in_
+            elif self.X_train_df_columns: # From data passed to BO.fit() if X was a DataFrame
+                input_cols = self.X_train_df_columns
+            elif self.bounds: # From BO.optimize() method if bounds_dict was provided
+                input_cols = list(self.bounds.keys())
 
-            # If the surrogate needs a DataFrame and column names (like our RFModel):
-            if hasattr(self.surrogate_model, 'predict_with_uncertainty') and \
-               'input_columns' in self.surrogate_model.predict_with_uncertainty.__code__.co_varnames and \
-               input_columns and not isinstance(X_np, pd.DataFrame) :
-                X_df = pd.DataFrame(X_np, columns=input_columns)
-                # This assumes the surrogate's predict_with_uncertainty can take input_columns as a kwarg
-                mu, uncertainty = self.surrogate_model.predict_with_uncertainty(X_df, input_columns=input_columns)
-            else:
-                # Assume surrogate can handle numpy array directly, or X_np is already a DataFrame
-                # and its predict_with_uncertainty doesn't strictly require input_columns as a separate arg
-                mu, uncertainty = self.surrogate_model.predict_with_uncertainty(X_np)
+            if input_cols is None and X_np.shape[1] > 0 : # Check if X_np has features
+                 # If surrogate is an sklearn pipeline, it might get feature names from training data.
+                 # Fallback: assume surrogate can handle numpy array or doesn't need explicit column names for predict_with_uncertainty
+                 # This might be true for some simple function-based surrogates or if X_np is already a DataFrame.
+                 # Our current RF and NN models expect DataFrame and input_columns for their predict_with_uncertainty.
+                 # This path might lead to errors if input_cols are truly needed and not found.
+                st.warning("BayesianOptimizer: input_columns not determined for surrogate model. "
+                           "Surrogate must handle NumPy array input for predict_with_uncertainty or this may fail.")
+                mu, sigma = self.surrogate_model.predict_with_uncertainty(X_np) # sigma is std_dev
+            elif input_cols is not None:
+                if X_np.shape[1] != len(input_cols):
+                    raise ValueError(f"Shape mismatch: X_np has {X_np.shape[1]} features, but found {len(input_cols)} input_columns.")
+                X_df = pd.DataFrame(X_np, columns=input_cols)
+                # All our current custom models (RF, MAML, Reptile, ProtoNet) have predict_with_uncertainty
+                # that takes (X_df, input_columns=input_columns)
+                mu, sigma = self.surrogate_model.predict_with_uncertainty(X_df, input_columns=input_cols) # sigma is std_dev
+            else: # No input_cols and X_np has no features (e.g. X_np.shape[1] == 0), this is an issue.
+                 raise ValueError("BayesianOptimizer: Cannot determine input columns and X_np has no features.")
 
-            # The uncertainty metric from surrogate_model.predict_with_uncertainty is assumed to be std_dev.
-            # Our RFModel was updated to return std_dev. NN wrappers will need to do the same.
-            sigma = uncertainty
         elif self.gp:
             mu, sigma = self._predict_with_internal_gp(X_np, return_std=True)
         else:
             raise RuntimeError("No surrogate model or internal GP available for prediction.")
 
         # Ensure mu is (n_samples,) or (n_samples, 1) and sigma is (n_samples,)
-        if mu.ndim > 1 and mu.shape[1] == 1:
-            mu = mu.ravel()
-        if sigma.ndim > 1 and sigma.shape[1] == 1:
-            sigma = sigma.ravel()
+        # Predictions from models are expected to be (n_samples, n_targets)
+        # Acquisition functions here are single-objective, so they expect single mu/sigma.
+        # If surrogate is multi-output, this needs careful handling.
+        # For now, assume mu and sigma are for the primary target or already scalarized.
+        if mu.ndim > 1:
+            if mu.shape[1] > 1:
+                st.warning("BayesianOptimizer: Surrogate model returned multiple target predictions. Using first target for acquisition.")
+                mu = mu[:, 0]
+            else: # mu.shape[1] == 1
+                mu = mu.ravel()
+
+        if sigma.ndim > 1:
+            if sigma.shape[1] > 1:
+                st.warning("BayesianOptimizer: Surrogate model returned multiple target uncertainties. Using first target for acquisition.")
+                sigma = sigma[:, 0]
+            else: # sigma.shape[1] == 1
+                sigma = sigma.ravel()
 
         return mu, sigma
     
@@ -503,21 +542,29 @@ def bayesian_optimization(train_inputs, train_targets, candidate_inputs, curiosi
 
 
 def multi_objective_bayesian_optimization(train_inputs, train_targets, candidate_inputs, weights,
-                                       max_or_min, curiosity=0.0, acquisition="UCB", n_calls=50,
-                                       strategy="weighted_sum"): # Added strategy
+                                       max_or_min, curiosity=0.0, acquisition="UCB", n_calls=50, # n_calls not really used for candidate list
+                                       strategy="weighted_sum", surrogate_model=None, input_columns=None):
     """
     Perform multi-objective Bayesian optimization for materials discovery.
+    Can use a pre-trained surrogate_model or fit individual GPs per objective.
     
     Parameters:
     -----------
-    train_inputs : numpy.ndarray
+    train_inputs : pd.DataFrame or numpy.ndarray
         Input features of labeled samples
     train_targets : numpy.ndarray
         Target values of labeled samples (multi-objective)
-    candidate_inputs : numpy.ndarray
+    candidate_inputs : pd.DataFrame or numpy.ndarray
         Input features of candidate samples
+    surrogate_model : object, optional
+        A pre-trained surrogate model instance. Must implement
+        `predict_with_uncertainty(X_df, input_columns)` returning (means, std_devs)
+        for all targets. If None, fits individual GPs per objective.
+    input_columns : list[str], optional
+        Required if train_inputs/candidate_inputs are numpy arrays and surrogate_model is provided
+        and needs DataFrame input with column names.
     weights : numpy.ndarray
-        Importance weights for each objective (used in 'weighted_sum', can influence 'parego' bias or be ignored)
+        Importance weights for each objective (used in 'weighted_sum', can influence 'parego' bias for 'parego')
     max_or_min : list
         Direction of optimization for each objective ('max' or 'min')
     curiosity : float
@@ -559,85 +606,165 @@ def multi_objective_bayesian_optimization(train_inputs, train_targets, candidate
     train_inputs_norm = (train_inputs - input_mean) / input_std
     candidate_inputs_norm = (candidate_inputs - input_mean) / input_std
     
-    # Initialize model for each objective
-    n_objectives = train_targets.shape[1]
-    models = []
-    
-    for i in range(n_objectives):
-        # Get target for this objective
-        y = train_targets[:, i].reshape(-1, 1)
-        
-        # Filter out invalid values
-        valid_indices = np.isfinite(y.flatten())
-        y_valid = y[valid_indices]
-        X_valid = train_inputs_norm[valid_indices]
-        
-        if len(X_valid) == 0 or len(y_valid) == 0:
-            continue
-        
-        # Choose kernel based on data size
-        if len(X_valid) < 10:
-            kernel = ConstantKernel(1.0) * RBF(length_scale=1.0) + WhiteKernel(noise_level=0.1)
-        else:
-            kernel = ConstantKernel(1.0) * Matern(length_scale=1.0, nu=2.5) + WhiteKernel(noise_level=0.1)
-        
-        # Normalize target
-        y_mean = np.mean(y_valid)
-        y_std = np.std(y_valid) + 1e-8
-        y_norm = (y_valid - y_mean) / y_std
-        
-        # Fit model
-        model = BayesianOptimizer(kernel=kernel)
-        model.fit(X_valid, y_norm)
-        
-        # Store model along with normalization parameters
-        models.append((model, y_mean, y_std))
-    
-    if not models:
-        st.warning("Failed to build models for all objectives. Selecting a random sample.")
-        return np.random.randint(len(candidate_inputs))
+    # --- Helper functions for acquisition calculations (defined at module level or accessible scope) ---
+    # _calculate_ucb, _calculate_ei, _calculate_pi
+    # For this diff, assume they are defined above this function in the same file.
 
     # Determine effective weights for scalarization
     if strategy == "parego":
-        # Generate random weights that sum to 1
-        # Using a Dirichlet distribution is common, but a simpler approach for now:
-        # Generate random numbers and normalize.
-        if n_objectives_from_targets > 0 :
-            random_w = np.random.rand(n_objectives_from_targets)
-            effective_weights = random_w / np.sum(random_w)
+        if n_objectives_from_targets > 0:
+            random_w = np.random.dirichlet(np.ones(n_objectives_from_targets), size=1).ravel()
+            effective_weights = random_w
             st.info(f"ParEGO strategy: using random weights: {np.round(effective_weights, 3)}")
-        else: # Should not happen if models were built
-            effective_weights = np.array([1.0])
-
+        else:
+            effective_weights = np.array([1.0]) # Fallback, though n_objectives should be >0
     else: # 'weighted_sum' or default
-        effective_weights = weights
-    
-    # Compute weighted acquisition function
-    acq_values_total = np.zeros(len(candidate_inputs_norm))
-    uncertainty_values_total = np.zeros(len(candidate_inputs_norm)) # For potential later use or logging
-    
-    for i, (model, y_mean, y_std) in enumerate(models):
-        # Get prediction and uncertainty
-        mu, sigma = model.predict(candidate_inputs_norm, return_std=True)
+        effective_weights = weights / np.sum(weights) # Normalize user weights if not already
+
+    # Prepare candidate inputs (ensure DataFrame if surrogate_model expects it)
+    if isinstance(candidate_inputs, np.ndarray) and input_columns:
+        candidate_inputs_df = pd.DataFrame(candidate_inputs, columns=input_columns)
+    elif isinstance(candidate_inputs, pd.DataFrame):
+        candidate_inputs_df = candidate_inputs
+    else: # Should not happen if input_columns logic is correct
+        raise ValueError("candidate_inputs format issue or missing input_columns for DataFrame conversion.")
+
+    num_candidates = len(candidate_inputs_df)
+    acq_values_total = np.zeros(num_candidates)
+
+    # Normalize train_inputs (for internal GP path)
+    # This normalization is only for the internal GP path.
+    # Surrogates are expected to handle their own scaling or work with original scale.
+    train_inputs_norm_for_gp = None
+    if surrogate_model is None:
+        if isinstance(train_inputs, pd.DataFrame):
+            train_inputs_np_for_gp = train_inputs.values
+        else:
+            train_inputs_np_for_gp = train_inputs
         
-        # Compute acquisition function
-        acq_values = model.acquisition_function(
-            candidate_inputs_norm, 
-            acquisition=acquisition, 
-            curiosity=curiosity
+        input_mean_for_gp = np.mean(train_inputs_np_for_gp, axis=0)
+        input_std_for_gp = np.std(train_inputs_np_for_gp, axis=0) + 1e-8
+        train_inputs_norm_for_gp = (train_inputs_np_for_gp - input_mean_for_gp) / input_std_for_gp
+        
+        if isinstance(candidate_inputs_df, pd.DataFrame):
+            candidate_inputs_norm_for_gp = (candidate_inputs_df.values - input_mean_for_gp) / input_std_for_gp
+        else: # Should be DataFrame by now
+            candidate_inputs_norm_for_gp = (candidate_inputs_df - input_mean_for_gp) / input_std_for_gp
+
+
+    if surrogate_model:
+        # Use the provided pre-trained multi-output surrogate model
+        if not getattr(surrogate_model, 'is_trained', True):
+             raise ValueError("Provided surrogate_model is not trained.")
+
+        # predict_with_uncertainty should return means and std_devs for ALL targets
+        # in their original scale.
+        all_mu_orig, all_sigma_orig = surrogate_model.predict_with_uncertainty(
+            candidate_inputs_df,
+            input_columns=input_columns # Pass input_columns if surrogate expects it
         )
-        
-        # Apply direction
-        if max_or_min[i].lower() == "min":
-            acq_values = -acq_values
-        
-        # Add weighted acquisition values
-        current_weight = effective_weights[i]
-        acq_values_total += current_weight * acq_values.flatten()
-        uncertainty_values_total += current_weight * sigma.flatten() # Not directly used for selection but calculated
-    
-    # Calculate novelty
-    novelty_scores = calculate_novelty(candidate_inputs_norm, train_inputs_norm)
+
+        if all_mu_orig.ndim == 1: all_mu_orig = all_mu_orig.reshape(-1, 1)
+        if all_sigma_orig.ndim == 1: all_sigma_orig = all_sigma_orig.reshape(-1, 1)
+
+        if all_mu_orig.shape[1] != n_objectives_from_targets or \
+           (all_sigma_orig.shape[1] != n_objectives_from_targets and all_sigma_orig.shape[1] != 1): # allow single shared sigma
+            raise ValueError(f"Surrogate model prediction shape mismatch. Expected {n_objectives_from_targets} targets. Got means: {all_mu_orig.shape}, sigmas: {all_sigma_orig.shape}")
+
+        for i in range(n_objectives_from_targets):
+            mu_obj = all_mu_orig[:, i]
+            sigma_obj = all_sigma_orig[:, i] if all_sigma_orig.shape[1] == n_objectives_from_targets else all_sigma_orig.ravel()
+
+            y_train_obj_orig = train_targets[:, i]
+            y_max_obj_orig = np.max(y_train_obj_orig[np.isfinite(y_train_obj_orig)]) if np.any(np.isfinite(y_train_obj_orig)) else 0.0
+            # For minimization, one might use y_min_obj_orig = np.min(...)
+
+            kappa_adjusted = 2.0 * (1.0 + 0.5 * curiosity)
+            xi_adjusted = 0.01 * (1.0 + 0.5 * curiosity)
+
+            acq_obj_values_i = np.zeros(num_candidates)
+            if acquisition == "UCB":
+                acq_obj_values_i = _calculate_ucb(mu_obj, sigma_obj, kappa_adjusted)
+            elif acquisition == "EI":
+                acq_obj_values_i = _calculate_ei(mu_obj, sigma_obj, y_max_obj_orig, xi_adjusted)
+            elif acquisition == "PI":
+                acq_obj_values_i = _calculate_pi(mu_obj, sigma_obj, y_max_obj_orig, xi_adjusted)
+            else: # Default to UCB
+                acq_obj_values_i = _calculate_ucb(mu_obj, sigma_obj, kappa_adjusted)
+
+            if max_or_min[i].lower() == "min":
+                if acquisition == "UCB": # LCB
+                    acq_obj_values_i = mu_obj - kappa_adjusted * sigma_obj
+                else: # For EI/PI, true minimization requires transforming the problem (e.g. -y)
+                      # or using specialized forms. Simple negation of acquisition is not standard.
+                      # This path would require careful re-evaluation of y_max_obj_orig for min case.
+                    st.warning(f"Minimization with {acquisition} for objective {i} using surrogate. Ensure target was pre-transformed or acquisition logic handles minimization.")
+                    acq_obj_values_i = -acq_obj_values_i # Tentative, may not be mathematically sound for EI/PI
+
+            acq_values_total += effective_weights[i] * acq_obj_values_i.flatten()
+
+    else: # Fallback to fitting individual GPs per objective (existing logic adapted)
+        models = []
+        for i in range(n_objectives_from_targets):
+            y_obj_single = train_targets[:, i].reshape(-1, 1)
+            valid_indices_obj = np.isfinite(y_obj_single.flatten())
+            y_valid_obj_for_gp = y_obj_single[valid_indices_obj]
+            # Use train_inputs_norm_for_gp for fitting internal GPs
+            X_valid_obj_for_gp = train_inputs_norm_for_gp[valid_indices_obj]
+
+            if len(X_valid_obj_for_gp) == 0: continue
+
+            kernel_gp = ConstantKernel(1.0) * Matern(length_scale=1.0, nu=2.5) + WhiteKernel(noise_level=0.1) \
+                if len(X_valid_obj_for_gp) >= 10 else ConstantKernel(1.0) * RBF(length_scale=1.0) + WhiteKernel(noise_level=0.1)
+
+            # BayesianOptimizer's internal GP handles its own y-normalization if normalize_y=True
+            gp_optimizer = BayesianOptimizer(kernel=kernel_gp, normalize_y=True)
+            gp_optimizer.fit(X_valid_obj_for_gp, y_valid_obj_for_gp)
+            models.append(gp_optimizer)
+
+        if not models or len(models) != n_objectives_from_targets:
+            st.warning("Failed to build models for all objectives using internal GPs. Selecting a random sample.")
+            return np.random.randint(len(candidate_inputs_df))
+
+        for i, model_i in enumerate(models):
+            # model_i is a BayesianOptimizer instance (with an internal GP)
+            # Its acquisition_function will use its own GP's normalized y_train for y_max (if normalize_y=True)
+            # It expects X in the same scale as it was trained on (i.e. train_inputs_norm_for_gp)
+            acq_obj_values_i = model_i.acquisition_function(
+                candidate_inputs_norm_for_gp, # Pass normalized candidates
+                acquisition=acquisition,
+                curiosity=curiosity
+            )
+
+            if max_or_min[i].lower() == "min":
+                # The internal GP's acquisition function (UCB, EI, PI) assumes maximization.
+                # For UCB, to get LCB, we'd need mu - kappa * sigma.
+                # For EI/PI with minimization, the problem should ideally be transformed (e.g. predict -y).
+                # This path needs careful handling if min objectives and EI/PI are used with internal GPs.
+                if acquisition == "UCB":
+                     mu_norm, sigma_norm = model_i._predict_with_internal_gp(candidate_inputs_norm_for_gp, return_std=True)
+                     kappa_adjusted = 2.0 * (1.0 + 0.5 * curiosity) # Default kappa from BO class
+                     acq_obj_values_i = mu_norm.ravel() - kappa_adjusted * sigma_norm.ravel()
+                else:
+                    st.warning(f"Minimization with {acquisition} for objective {i} using internal GP might require target pre-transformation.")
+                    acq_obj_values_i = -acq_obj_values_i # Tentative
+
+            acq_values_total += effective_weights[i] * acq_obj_values_i.flatten()
+
+    # Calculate novelty (using original scale inputs if possible, or normalized for internal GP path)
+    # The `calculate_novelty` function expects NumPy arrays.
+    novelty_eval_candidates = candidate_inputs_df.values if isinstance(candidate_inputs_df, pd.DataFrame) else candidate_inputs_df
+    novelty_train_references = None
+    if isinstance(train_inputs, pd.DataFrame):
+        novelty_train_references = train_inputs.iloc[valid_indices].values # Use filtered valid_indices from original train_inputs
+    elif isinstance(train_inputs, np.ndarray):
+        novelty_train_references = train_inputs[valid_indices]
+
+    if surrogate_model is None and train_inputs_norm_for_gp is not None: # If internal GPs were used, novelty on normalized space
+        novelty_eval_candidates = candidate_inputs_norm_for_gp
+        novelty_train_references = train_inputs_norm_for_gp[valid_indices] # Ensure correct reference for novelty
+
+    novelty_scores = calculate_novelty(novelty_eval_candidates, novelty_train_references)
     
     # Adjust with novelty if curiosity is positive
     if curiosity > 0:
