@@ -66,6 +66,91 @@ class MAMLModel(nn.Module):
         output = self.output_layer(x)
         return torch.nn.functional.softplus(output)
 
+    def predict_with_uncertainty(self, X_df_original_scale: pd.DataFrame, input_columns: list[str], num_samples=30, dropout_rate=0.3):
+        """
+        Makes predictions and estimates uncertainty using MC dropout.
+        Assumes the model has been trained and scalers (self.scaler_x, self.scaler_y) are set.
+
+        Args:
+            X_df_original_scale (pd.DataFrame): DataFrame with input features in their original scale.
+            input_columns (list[str]): List of input feature column names to use from X_df_original_scale.
+            num_samples (int): Number of Monte Carlo samples for uncertainty estimation.
+            dropout_rate (float): Dropout rate to use during MC sampling.
+
+        Returns:
+            tuple: (mean_predictions_original_scale, std_dev_original_scale)
+                   mean_predictions_original_scale (np.ndarray): Predictions in the original target scale.
+                   std_dev_original_scale (np.ndarray): Standard deviation of predictions in original target scale.
+        """
+        if not getattr(self, 'is_trained', False) or self.scaler_x is None or self.scaler_y is None:
+            raise RuntimeError("Model is not trained yet or scalers are missing. Call meta_train first.")
+
+        self.eval() # Ensure model is in eval mode for consistent dropout behavior if not handled by calculate_uncertainty_ensemble
+
+        X_processed = X_df_original_scale[input_columns]
+        X_scaled_np = self.scaler_x.transform(X_processed)
+        X_tensor = torch.tensor(X_scaled_np, dtype=torch.float32)
+
+        # Get mean predictions (scaled)
+        with torch.no_grad():
+            mean_predictions_scaled = self(X_tensor).numpy() # self.forward(X_tensor)
+
+        # Get uncertainty (variance, scaled) using existing ensemble/dropout method
+        # calculate_uncertainty_ensemble sets model.train() internally for dropout
+        variance_scaled_per_sample = calculate_uncertainty_ensemble(
+            self, X_tensor, num_samples=num_samples, dropout_rate=dropout_rate
+        ) # This returns per-sample variance (or mean variance if multi-target)
+
+        # Inverse transform mean predictions
+        mean_predictions_original_scale = self.scaler_y.inverse_transform(mean_predictions_scaled)
+
+        # Inverse transform uncertainty (variance -> std_dev)
+        # scaler_y.scale_ is an array of scales for each target feature
+        # Variance scales by scale_factor^2
+        if variance_scaled_per_sample.ndim == 1: # If already averaged over targets
+            variance_scaled_per_sample = variance_scaled_per_sample.reshape(-1, 1)
+
+        # If scaler_y was fit on multiple targets, self.scaler_y.scale_ will be an array.
+        # If only one target, it's a scalar. We need to handle this for broadcasting.
+        scale_sq = self.scaler_y.scale_ ** 2
+        if variance_scaled_per_sample.shape[1] == 1 and len(scale_sq) > 1:
+            # If uncertainty is a single column but multiple targets, assume it's an average
+            # and we can't easily scale it back per target.
+            # This implies calculate_uncertainty_ensemble should ideally return per-target variance if possible
+            # For now, if it's a single column, we might have to use an average scale factor or just one.
+            # Let's assume calculate_uncertainty_ensemble already gives mean variance if multi-target.
+            # And if single target, scaler_y.scale_ is scalar.
+            # If calculate_uncertainty_ensemble returns (n_samples, n_targets) variance:
+            # variance_original_scale = variance_scaled_per_sample * scale_sq
+            # std_dev_original_scale = np.sqrt(variance_original_scale)
+            # std_dev_original_scale_per_sample = np.mean(std_dev_original_scale, axis=1).reshape(-1, 1)
+
+            # Simpler assumption: if variance_scaled_per_sample is (n_samples, 1),
+            # and if scaler_y was multi-target, we use mean of scale_sq. This is an approximation.
+            # A better approach: calculate_uncertainty_ensemble should return variance per target.
+            # The current calculate_uncertainty_ensemble averages multi-target uncertainty.
+            # So, we use the mean of squared scales.
+            mean_scale_sq = np.mean(scale_sq) if len(scale_sq) > 0 else 1.0
+            variance_original_scale = variance_scaled_per_sample * mean_scale_sq
+
+        elif variance_scaled_per_sample.shape[1] == len(scale_sq): # Per-target variance
+             variance_original_scale = variance_scaled_per_sample * scale_sq
+        else: # Mismatch, fallback to mean scale or error
+            st.warning("Mismatch in uncertainty and target scaler dimensions. Using mean scale for uncertainty.")
+            mean_scale_sq = np.mean(scale_sq) if len(scale_sq) > 0 else 1.0
+            variance_original_scale = variance_scaled_per_sample * mean_scale_sq
+
+
+        std_dev_original_scale = np.sqrt(np.maximum(variance_original_scale, 1e-12)) # ensure non-negative before sqrt
+
+        # Ensure std_dev_original_scale is (n_samples, 1) by averaging if it's multi-column
+        if std_dev_original_scale.ndim > 1 and std_dev_original_scale.shape[1] > 1:
+            std_dev_original_scale_per_sample = np.mean(std_dev_original_scale, axis=1).reshape(-1, 1)
+        else:
+            std_dev_original_scale_per_sample = std_dev_original_scale.reshape(-1, 1)
+
+        return mean_predictions_original_scale, std_dev_original_scale_per_sample
+
 
 def meta_train(meta_model, data, input_columns, target_columns, epochs=100, inner_lr=0.01, 
                outer_lr=0.001, num_tasks=4, inner_lr_decay=0.95, curiosity=0, 
@@ -389,6 +474,10 @@ def meta_train(meta_model, data, input_columns, target_columns, epochs=100, inne
         final_loss = loss_function(all_predictions, targets).item()
     
     st.success(f"Final evaluation loss on all labeled data: {final_loss:.4f}")
+
+    meta_model.is_trained = True
+    meta_model.scaler_x = scaler_inputs
+    meta_model.scaler_y = scaler_targets
     
     return meta_model, scaler_inputs, scaler_targets
 

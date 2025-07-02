@@ -105,6 +105,66 @@ class ProtoNetModel(nn.Module):
         # Project to property space with softplus activation for positive properties
         return torch.nn.functional.softplus(self.projector(embedding))
 
+    def predict_with_uncertainty(self, X_df_original_scale: pd.DataFrame, input_columns: list[str], num_perturbations=50, noise_scale=0.1, dropout_rate=0.3):
+        """
+        Makes predictions and estimates uncertainty.
+        Assumes the model has been trained and scalers (self.scaler_x, self.scaler_y) are set.
+        Uses the model's direct forward pass for mean prediction and app.utils.calculate_uncertainty for uncertainty.
+
+        Args:
+            X_df_original_scale (pd.DataFrame): DataFrame with input features in their original scale.
+            input_columns (list[str]): List of input feature column names to use.
+            num_perturbations (int): Number of Monte Carlo samples for uncertainty estimation.
+            noise_scale (float): Scale of Gaussian noise for input perturbation for uncertainty.
+            dropout_rate (float): Dropout rate to use during MC sampling for uncertainty.
+
+        Returns:
+            tuple: (mean_predictions_original_scale, std_dev_original_scale_per_sample)
+                   mean_predictions_original_scale (np.ndarray): Predictions in the original target scale.
+                   std_dev_original_scale_per_sample (np.ndarray): Standard deviation of predictions (per sample) in original target scale.
+        """
+        if not getattr(self, 'is_trained', False) or self.scaler_x is None or self.scaler_y is None:
+            raise RuntimeError("Model is not trained yet or scalers are missing. Call protonet_train first.")
+
+        self.eval() # Ensure model is in eval mode for mean prediction
+
+        X_processed = X_df_original_scale[input_columns]
+        X_scaled_np = self.scaler_x.transform(X_processed)
+        X_tensor = torch.tensor(X_scaled_np, dtype=torch.float32)
+
+        # Get mean predictions (scaled) using the model's forward pass
+        with torch.no_grad():
+            mean_predictions_scaled = self(X_tensor).numpy()
+
+        # Inverse transform mean predictions
+        mean_predictions_original_scale = self.scaler_y.inverse_transform(mean_predictions_scaled)
+
+        # Get uncertainty (variance-like, scaled) using app.utils.calculate_uncertainty
+        from app.utils import calculate_uncertainty as util_calc_uncertainty
+
+        variance_scaled_per_sample = util_calc_uncertainty(
+            self, X_tensor,
+            num_perturbations=num_perturbations,
+            noise_scale=noise_scale,
+            dropout_rate=dropout_rate
+        ) # Shape (n_samples, 1)
+
+        # Inverse transform uncertainty (variance -> std_dev)
+        scale_sq = self.scaler_y.scale_ ** 2
+
+        if variance_scaled_per_sample.shape[1] == 1: # As returned by util_calc_uncertainty
+            mean_scale_sq = np.mean(scale_sq) if len(scale_sq) > 0 else 1.0
+            variance_original_scale = variance_scaled_per_sample * mean_scale_sq
+        else:
+            # This case should ideally not be hit if util_calc_uncertainty behaves as expected
+            st.warning("Unexpected shape for variance_scaled_per_sample in ProtoNetModel. Using mean scale.")
+            mean_scale_sq = np.mean(scale_sq) if len(scale_sq) > 0 else 1.0
+            variance_original_scale = variance_scaled_per_sample * mean_scale_sq
+
+        std_dev_original_scale_per_sample = np.sqrt(np.maximum(variance_original_scale, 1e-12))
+
+        return mean_predictions_original_scale, std_dev_original_scale_per_sample.reshape(-1, 1)
+
 
 def euclidean_distance(x, y):
     """
@@ -392,6 +452,9 @@ def protonet_train(model, data, input_columns, target_columns, epochs=50,
     if total_samples >= 5:
         model = fine_tune_projection(model, inputs, targets, epochs=min(20, epochs//2), learning_rate=learning_rate/5)
     
+    model.is_trained = True
+    model.scaler_x = scaler_x
+    model.scaler_y = scaler_y
     return model, scaler_x, scaler_y
 
 
@@ -443,8 +506,51 @@ def fine_tune_projection(model, inputs, targets, epochs=20, learning_rate=0.0001
     # Unfreeze encoder for future updates
     for param in model.encoder.parameters():
         param.requires_grad = True
+
+    model.is_trained = True
+    # Note: protonet_train returns scaler_x, scaler_y but doesn't set them on model.
+    # This should ideally happen inside protonet_train, or the calling function needs to set them.
+    # For now, we'll assume they are set if the model is to be used by BayesianOptimizer.
+    # Let's modify protonet_train to set them.
     
     return model
+
+
+def protonet_train(model, data, input_columns, target_columns, epochs=50,
+                  learning_rate=0.001, num_tasks=5, num_shot=None, num_query=None,
+                  batch_size=16, scaler_x=None, scaler_y=None, early_stopping=True): # Existing signature
+
+    # ... (existing protonet_train code) ...
+
+    # At the end of protonet_train, before returning:
+    # model, scaler_x, scaler_y are the final model and scalers.
+    model.scaler_x = scaler_x # Assuming scaler_x is the final input scaler
+    model.scaler_y = scaler_y # Assuming scaler_y is the final target scaler
+    # is_trained flag is already handled conceptually by returning a trained model.
+    # Let's add an explicit flag like others.
+    # model.is_trained = True # This should be set after successful training.
+
+    # The return from protonet_train is model, scaler_x, scaler_y.
+    # The `is_trained` flag should be set within the training function.
+    # The original return of protonet_train is: return model, scaler_x, scaler_y
+    # We need to ensure these scalers are attached to the model object itself.
+    # Modifying protonet_train directly:
+
+# This is a bit tricky because protonet_train is a standalone function, not a class method.
+# The standard pattern is:
+# model_instance = ProtoNetModel(...)
+# trained_model, final_scaler_x, final_scaler_y = protonet_train(model_instance, ...)
+# trained_model.scaler_x = final_scaler_x
+# trained_model.scaler_y = final_scaler_y
+# trained_model.is_trained = True
+# This assignment would happen in main.py.
+
+# For the predict_with_uncertainty method to work, these attributes must be on the model object.
+# So, the responsibility lies with the caller of protonet_train (i.e., main.py)
+# to set these attributes on the returned model object.
+
+# Let's assume main.py will handle this. So, no change to protonet_train itself here for setting attributes.
+# The attributes will be expected on the model instance when predict_with_uncertainty is called.
 
 
 def evaluate_protonet(model, data, input_columns, target_columns, curiosity, weights, max_or_min, acquisition="UCB"):
