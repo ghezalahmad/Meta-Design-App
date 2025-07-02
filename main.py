@@ -209,9 +209,73 @@ if uploaded_state_file is not None:
                             st.warning("Random Forest model state files not found in ZIP, though model type was RF.")
                     except Exception as e:
                         st.error(f"Error loading Random Forest model state: {e}")
-                # TODO: Add loading for PyTorch models (MAML, Reptile, ProtoNet)
 
-            if "loaded_ui_settings" in st.session_state: # If UI settings were loaded, trigger rerun
+                elif model_type_to_load in ["MAML", "Reptile", "ProtoNet"]:
+                    try:
+                        model_file = f"model_state/{model_type_to_load.lower()}_model_statedict.pt"
+                        scaler_x_file = f"model_state/{model_type_to_load.lower()}_scaler_x.joblib"
+                        scaler_y_file = f"model_state/{model_type_to_load.lower()}_scaler_y.joblib"
+
+                        if model_file in zip_ref.namelist() and \
+                           scaler_x_file in zip_ref.namelist() and \
+                           scaler_y_file in zip_ref.namelist():
+
+                            # Determine input_size and output_size (crucial for model instantiation)
+                            # These should be available from the loaded dataset and selected columns in ui_settings
+                            loaded_input_cols = ui_settings_loaded_for_model.get("input_columns", [])
+                            loaded_target_cols = ui_settings_loaded_for_model.get("target_columns", [])
+
+                            if not loaded_input_cols or not loaded_target_cols:
+                                st.error(f"Cannot load {model_type_to_load} model: input/target column information missing in saved settings.")
+                                raise ValueError("Missing column info for model instantiation.")
+
+                            input_size = len(loaded_input_cols)
+                            output_size = len(loaded_target_cols)
+
+                            # Instantiate model based on type and loaded hyperparameters
+                            if model_type_to_load == "MAML":
+                                model_instance = MAMLModel(
+                                    input_size=input_size, output_size=output_size,
+                                    hidden_size=ui_settings_loaded_for_model.get("maml_hidden_size", defaults["hidden_size"]),
+                                    num_layers=ui_settings_loaded_for_model.get("maml_num_layers", 3),
+                                    dropout_rate=ui_settings_loaded_for_model.get("maml_dropout_rate", 0.3)
+                                )
+                            elif model_type_to_load == "Reptile":
+                                model_instance = ReptileModel(
+                                    input_size=input_size, output_size=output_size,
+                                    hidden_size=ui_settings_loaded_for_model.get("reptile_hidden_size", defaults["hidden_size"]),
+                                    num_layers=ui_settings_loaded_for_model.get("reptile_num_layers", 3),
+                                    dropout_rate=ui_settings_loaded_for_model.get("reptile_dropout_rate", 0.3)
+                                )
+                            elif model_type_to_load == "ProtoNet":
+                                model_instance = ProtoNetModel(
+                                    input_size=input_size, output_size=output_size,
+                                    embedding_size=ui_settings_loaded_for_model.get("protonet_embedding_size", 256),
+                                    num_layers=ui_settings_loaded_for_model.get("protonet_num_layers", 3),
+                                    dropout_rate=ui_settings_loaded_for_model.get("protonet_dropout_rate", 0.3)
+                                )
+                            else: # Should not happen due to outer if
+                                raise ValueError(f"Unknown PyTorch model type for loading: {model_type_to_load}")
+
+                            with zip_ref.open(model_file) as mf:
+                                model_instance.load_state_dict(torch.load(mf))
+                            with zip_ref.open(scaler_x_file) as sf_x:
+                                loaded_scaler_x = joblib.load(sf_x)
+                            with zip_ref.open(scaler_y_file) as sf_y:
+                                loaded_scaler_y = joblib.load(sf_y)
+
+                            model_instance.eval() # Set to eval mode
+
+                            st.session_state.model = model_instance
+                            st.session_state.scaler_inputs = loaded_scaler_x
+                            st.session_state.scaler_targets = loaded_scaler_y
+                            st.success(f"{model_type_to_load} model state loaded successfully.")
+                        else:
+                            st.warning(f"{model_type_to_load} model state files not found in ZIP.")
+                    except Exception as e:
+                        st.error(f"Error loading {model_type_to_load} model state: {e}")
+
+            if "loaded_ui_settings" in st.session_state: # If UI settings were loaded (implies model type is known)
                 st.experimental_rerun()
 
         # This message might appear before rerun fully updates UI
