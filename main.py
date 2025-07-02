@@ -1002,6 +1002,9 @@ if data is not None:
                                     min_samples_per_task=3,
                                     early_stopping_patience=10
                                 )
+                                st.session_state.model = model # Store generic model
+                                st.session_state.scaler_inputs = scaler_inputs
+                                st.session_state.scaler_targets = scaler_targets
                                 
                                 # Evaluate the model
                                 result_df = evaluate_maml(
@@ -1039,6 +1042,9 @@ if data is not None:
                                     reptile_num_tasks,
                                     batch_size=batch_size if 'batch_size' in locals() else 16
                                 )
+                                st.session_state.model = model # Store generic model
+                                st.session_state.scaler_inputs = scaler_x # reptile_train returns scaler_x, scaler_y
+                                st.session_state.scaler_targets = scaler_y
                                 
                                 # Evaluate the model
                                 result_df = evaluate_reptile(
@@ -1076,6 +1082,9 @@ if data is not None:
                                     num_shot=num_shot, 
                                     num_query=num_query
                                 )
+                                st.session_state.model = model # Store generic model
+                                st.session_state.scaler_inputs = scaler_x # protonet_train returns scaler_x, scaler_y
+                                st.session_state.scaler_targets = scaler_y
                                 
                                 # Evaluate the model
                                 result_df = evaluate_protonet(
@@ -1307,11 +1316,35 @@ if data is not None:
                                     st.info("Random Forest model state and scalers added to save file.")
                                 except Exception as e:
                                     st.warning(f"Could not save Random Forest model state: {e}")
-                        # TODO: Add saving for PyTorch models (MAML, Reptile, ProtoNet) state_dict and scalers
+
+                        elif model_type in ["MAML", "Reptile", "ProtoNet"] and "model" in st.session_state:
+                            if st.session_state.model: # Check if model object exists
+                                try:
+                                    # Save PyTorch model state_dict
+                                    model_buffer = io.BytesIO()
+                                    torch.save(st.session_state.model.state_dict(), model_buffer)
+                                    zip_file.writestr(f"model_state/{model_type.lower()}_model_statedict.pt", model_buffer.getvalue())
+
+                                    # Save scalers (assuming they are stored in session_state after training these models)
+                                    if "scaler_inputs" in st.session_state and st.session_state.scaler_inputs:
+                                        scaler_x_buffer = io.BytesIO()
+                                        joblib.dump(st.session_state.scaler_inputs, scaler_x_buffer)
+                                        zip_file.writestr(f"model_state/{model_type.lower()}_scaler_x.joblib", scaler_x_buffer.getvalue())
+
+                                    if "scaler_targets" in st.session_state and st.session_state.scaler_targets:
+                                        scaler_y_buffer = io.BytesIO()
+                                        joblib.dump(st.session_state.scaler_targets, scaler_y_buffer)
+                                        zip_file.writestr(f"model_state/{model_type.lower()}_scaler_y.joblib", scaler_y_buffer.getvalue())
+
+                                    model_state_saved = True
+                                    st.info(f"{model_type} model state and scalers added to save file.")
+                                except Exception as e:
+                                    st.warning(f"Could not save {model_type} model state: {e}")
+
                         # TODO: Add saving for GPR fallback model if it was used/is in session_state
 
                         if not model_state_saved:
-                            st.info("Model state not saved (either model not trained, not RF, or not yet supported for saving).")
+                            st.info("Model state not saved (model not trained, or not yet supported for saving type).")
 
                     zip_buffer.seek(0)
                     st.download_button(
