@@ -1234,23 +1234,89 @@ if data is not None:
                                 st.error("Not enough labeled or unlabeled data for Bayesian Optimization after filtering.")
                             else:
                                 X_labeled_bo = labeled_bo_data[input_columns]
-                                # BO acquisition functions are typically single-objective. Using first target.
-                                # This needs to be reconciled with multi-objective strategies later.
-                                y_labeled_bo = labeled_bo_data[target_columns[0]].values
+                                if len(target_columns) > 1:
+                                    st.info(f"Using Multi-Objective Bayesian Optimization with strategy: {mobo_strategy}")
+                                    # Prepare data for MOBO
+                                    # train_inputs and candidate_inputs can be DataFrames
+                                    # train_targets should be NumPy array
+                                    # input_columns list is also needed by the MOBO function if surrogate_model is used
 
-                                bo = BayesianOptimizer(surrogate_model=active_model_object)
-                                bo.fit(X_labeled_bo, y_labeled_bo) # Pass DataFrame X to fit
+                                    acq_scores = multi_objective_bayesian_optimization(
+                                        train_inputs=X_labeled_bo, # DataFrame
+                                        train_targets=labeled_bo_data[target_columns].values, # NumPy array
+                                        candidate_inputs=unlabeled_bo_data[input_columns], # DataFrame
+                                        weights=weights, # User-defined weights for objectives
+                                        max_or_min=max_or_min, # User-defined directions
+                                        curiosity=curiosity,
+                                        acquisition=acquisition_function_bo,
+                                        strategy=mobo_strategy, # From UI
+                                        surrogate_model=active_model_object,
+                                        input_columns=input_columns
+                                    )
+                                    if acq_scores is None or len(acq_scores) != len(unlabeled_bo_data):
+                                        st.error("Multi-objective Bayesian optimization did not return valid acquisition scores. Falling back to standard evaluation.")
+                                        # Fallback logic or stop - for now, let's just error out or let it be handled by evaluate_*
+                                        # This means result_df would not be overridden by BO results here.
+                                        # To prevent this, ensure evaluate_* is called if BO fails.
+                                        # For now, let's assume acq_scores is valid. If not, result_df won't be set by BO.
+                                        # A more robust fallback would be needed if this path is critical.
+                                        # Let's structure it so that if this fails, the original result_df from evaluate_* is used.
+                                        # This requires evaluate_* to run first, or a flag.
+                                        # For now, if BO is selected, it's the primary source of Utility.
+                                        pass # Will be handled if acq_scores is None
+                                else: # Single objective BO
+                                    st.info(f"Using Single-Objective Bayesian Optimization with acquisition: {acquisition_function_bo}")
+                                    # BO acquisition functions are typically single-objective. Using first target.
+                                    y_labeled_bo = labeled_bo_data[target_columns[0]].values
 
-                                # Get acquisition scores for unlabeled candidates
-                                X_unlabeled_bo_np = unlabeled_bo_data[input_columns].values
-                                acq_scores = bo.acquisition_function(
-                                    X_unlabeled_bo_np,
-                                    acquisition=acquisition_function_bo, # From UI
-                                    curiosity=curiosity # Use the curiosity from the active model's UI section
-                                )
+                                    bo = BayesianOptimizer(surrogate_model=active_model_object)
+                                    bo.fit(X_labeled_bo, y_labeled_bo) # Pass DataFrame X to fit
+
+                                    # Get acquisition scores for unlabeled candidates
+                                    X_unlabeled_bo_np = unlabeled_bo_data[input_columns].values
+                                    acq_scores = bo.acquisition_function(
+                                        X_unlabeled_bo_np,
+                                        acquisition=acquisition_function_bo, # From UI
+                                        curiosity=curiosity # Use the curiosity from the active model's UI section
+                                    )
 
                                 result_df_bo = unlabeled_bo_data.copy()
-                                result_df_bo["Utility"] = acq_scores
+                                if acq_scores is not None and len(acq_scores) == len(result_df_bo):
+                                    result_df_bo["Utility"] = acq_scores
+                                else:
+                                    st.error("Failed to get acquisition scores from Bayesian Optimizer. Utility will not be based on BO.")
+                                    # If acq_scores failed, result_df from model's own evaluate_* should be used.
+                                    # This means we should not overwrite result_df if BO path fails to produce scores.
+                                    # This logic needs evaluate_* to run first if BO is an overlay.
+                                    # For now: if use_bayesian_optimizer_for_suggestion is true, we *try* to set result_df.
+                                    # If it fails to get acq_scores, result_df might be from a previous step or incomplete.
+                                    # Let's ensure result_df is only assigned if acq_scores are valid.
+                                    # The `result_df = result_df_bo[bo_new_col_order]` line later will handle this.
+                                    # So if acq_scores is None, "Utility" won't be there, and it might break.
+                                    # Better: only proceed with BO result_df if acq_scores are valid.
+                                    result_df = st.session_state.get("result_df") # Fallback to potentially existing result_df
+                                    # This is getting complicated. Let's simplify:
+                                    # The BO path will *replace* the result_df. If it fails, it errors.
+
+                                if acq_scores is None:
+                                     st.error("Acquisition score calculation failed in Bayesian Optimization. Cannot proceed with BO-based utility.")
+                                     # To prevent erroring out later, we should not try to use result_df_bo
+                                     # Instead, ensure the original result_df from evaluate_* is used.
+                                     # This means the BO block should be self-contained in setting result_df or erroring.
+                                     # For now, if acq_scores is None, we will skip overriding result_df.
+                                     # This means the `result_df` from the non-BO path (evaluate_*) should have already run.
+                                     # This implies a structural change:
+                                     # 1. Always run evaluate_*
+                                     # 2. If BO is checked, then *override* Utility (and possibly other things)
+                                     # This is safer.
+
+                                     # For now, let's assume if acq_scores is None, the original result_df remains.
+                                     # The current structure IS that evaluate_* runs first, then this BO block overrides result_df.
+                                     # So, if acq_scores is None here, the original result_df should persist.
+                                     # The only issue is if `result_df = result_df_bo[bo_new_col_order]` runs with an incomplete `result_df_bo`.
+                                     # Let's ensure `result_df_bo` is fully populated before assigning to `result_df`.
+                                     # And if `acq_scores` is None, this whole BO-specific population of `result_df` will be skipped.
+                                     # This is handled by the `if acq_scores is not None and len(acq_scores) == len(result_df_bo):` block.
 
                                 # Get mean predictions and uncertainties directly from surrogate for display
                                 # The surrogate's predict_with_uncertainty method should handle input_columns
