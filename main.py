@@ -15,7 +15,7 @@ from sklearn.preprocessing import StandardScaler, RobustScaler
 from st_aggrid import AgGrid, GridOptionsBuilder, DataReturnMode, GridUpdateMode, JsCode
 
 # Import model implementations
-from app.models import MAMLModel, meta_train, evaluate_maml, calculate_utility_with_acquisition
+from app.models import MAMLModel, meta_train, evaluate_maml # calculate_utility_with_acquisition was removed
 from app.reptile_model import ReptileModel, reptile_train, evaluate_reptile
 from app.protonet_model import ProtoNetModel, protonet_train, evaluate_protonet
 from app.rf_model import RFModel, train_rf_model, evaluate_rf_model
