@@ -352,31 +352,34 @@ if model_type == "MAML":
     st.sidebar.subheader("MAML Model Configuration")
     
     with st.sidebar.expander("Network Architecture", expanded=False):
-        hidden_size = st.slider("Hidden Size:", 64, 512, defaults["hidden_size"], 32)
-        num_layers = st.slider("Number of Layers:", 2, 5, 3, 1)
-        dropout_rate = st.slider("Dropout Rate:", 0.0, 0.5, 0.2, 0.05)
+        hidden_size = st.slider("Hidden Size:", 64, 512, defaults["hidden_size"], 32, help="Number of units in hidden layers.")
+        num_layers = st.slider("Number of Layers:", 2, 5, 3, 1, help="Number of hidden layers in the network.")
+        dropout_rate = st.slider("Dropout Rate:", 0.0, 0.5, 0.2, 0.05, help="Dropout probability for regularization during training.")
     
     with st.sidebar.expander("Meta-Learning Parameters", expanded=True):
-        use_adaptive_inner_lr = st.checkbox("Enable Adaptive Inner LR", value=True)
-        inner_lr = 0.0001 if use_adaptive_inner_lr else st.slider("Inner Loop Learning Rate:", 0.00005, 0.01, defaults["inner_lr"], 0.0001)
-        inner_lr_decay = 0.95 if use_adaptive_inner_lr else st.slider("Inner LR Decay Rate:", 0.8, 1.00, 0.98, 0.01)
+        use_adaptive_inner_lr = st.checkbox("Enable Adaptive Inner LR", value=True, help="Automatically adjust inner loop learning rate based on heuristics.")
+        inner_lr_help_text = "Learning rate for task-specific adaptation (inner loop). Ignored if adaptive LR is enabled."
+        inner_lr = 0.0001 if use_adaptive_inner_lr else st.slider("Inner Loop Learning Rate:", 0.00005, 0.01, defaults["inner_lr"], 0.0001, help=inner_lr_help_text)
         
-        use_adaptive_outer_lr = st.checkbox("Enable Adaptive Outer LR", value=True)
-        outer_lr = 0.00002 if use_adaptive_outer_lr else st.slider("Outer Loop Learning Rate:", 0.00001, 0.01, defaults["outer_lr"], 0.00001)
+        inner_lr_decay_help_text = "Decay rate for inner loop learning rate per epoch. Ignored if adaptive LR is enabled."
+        inner_lr_decay = 0.95 if use_adaptive_inner_lr else st.slider("Inner LR Decay Rate:", 0.8, 1.00, 0.98, 0.01, help=inner_lr_decay_help_text)
         
-        use_adaptive_epochs = st.checkbox("Enable Adaptive Training Length", value=True)
-        meta_epochs = 100 if use_adaptive_epochs else st.slider("Meta-Training Epochs:", 10, 300, defaults["meta_epochs"], 10)
+        use_adaptive_outer_lr = st.checkbox("Enable Adaptive Outer LR", value=True, help="Automatically adjust outer loop learning rate based on heuristics.")
+        outer_lr_help_text = "Learning rate for meta-model updates (outer loop). Ignored if adaptive LR is enabled."
+        outer_lr = 0.00002 if use_adaptive_outer_lr else st.slider("Outer Loop Learning Rate:", 0.00001, 0.01, defaults["outer_lr"], 0.00001, help=outer_lr_help_text)
         
-        num_tasks = st.slider("Number of Tasks:", 2, 10, defaults["num_tasks"], 1)
+        use_adaptive_epochs = st.checkbox("Enable Adaptive Training Length", value=True, help="Automatically determine number of meta-training epochs based on heuristics.")
+        meta_epochs_help_text = "Number of epochs for meta-training. Ignored if adaptive training length is enabled."
+        meta_epochs = 100 if use_adaptive_epochs else st.slider("Meta-Training Epochs:", 10, 300, defaults["meta_epochs"], 10, help=meta_epochs_help_text)
+
+        num_tasks = st.slider("Number of Tasks:", 2, 10, defaults["num_tasks"], 1, help="Number of tasks to sample per meta-training epoch.")
     
     default_curiosity = defaults["curiosity"]
     if "curiosity_loaded_value" in st.session_state:
         default_curiosity = st.session_state.curiosity_loaded_value
-        # del st.session_state.curiosity_loaded_value # Clear after use for this section
-        # Decided not to delete yet, as other model sections might need it if model_type changes after load.
-        # It will be naturally overridden if user interacts with a specific curiosity slider.
 
-    curiosity = st.slider("Exploit (-2) vs Explore (+2)", -2.0, 2.0, default_curiosity, 0.1, key="maml_curiosity") # Added key
+    curiosity_help = "Adjusts the exploration-exploitation balance. Higher values favor exploration of novel/uncertain regions, lower values favor exploitation of known high-performing regions."
+    curiosity = st.slider("Exploit (-2) vs Explore (+2)", -2.0, 2.0, default_curiosity, 0.1, key="maml_curiosity", help=curiosity_help)
     if curiosity < -1.0:
         st.info("Current strategy: Strong exploitation - focusing on known good regions")
     elif curiosity < 0:
@@ -391,25 +394,28 @@ elif model_type == "Reptile":
     st.sidebar.subheader("Reptile Model Configuration")
     
     with st.sidebar.expander("Network Architecture", expanded=False):
-        hidden_size = st.slider("Hidden Size:", 64, 512, defaults["hidden_size"], 32)
-        num_layers = st.slider("Number of Layers:", 2, 5, 3, 1)
-        dropout_rate = st.slider("Dropout Rate:", 0.0, 0.5, 0.3, 0.05)
+        hidden_size = st.slider("Hidden Size:", 64, 512, defaults["hidden_size"], 32, help="Number of units in hidden layers for Reptile.")
+        num_layers = st.slider("Number of Layers:", 2, 5, 3, 1, help="Number of hidden layers in the Reptile network.")
+        dropout_rate = st.slider("Dropout Rate:", 0.0, 0.5, 0.3, 0.05, help="Dropout probability for Reptile.")
     
     with st.sidebar.expander("Training Parameters", expanded=True):
-        use_adaptive_reptile_lr = st.checkbox("Enable Adaptive Learning Rate", value=True)
-        reptile_learning_rate = 0.005 if use_adaptive_reptile_lr else st.slider("Learning Rate:", 0.0001, 0.1, defaults["reptile_learning_rate"], 0.001)
+        use_adaptive_reptile_lr = st.checkbox("Enable Adaptive Learning Rate", value=True, help="Automatically adjust Reptile learning rate.")
+        reptile_lr_help = "Learning rate for Reptile model updates. Ignored if adaptive LR is enabled."
+        reptile_learning_rate = 0.005 if use_adaptive_reptile_lr else st.slider("Learning Rate:", 0.0001, 0.1, defaults["reptile_learning_rate"], 0.001, help=reptile_lr_help)
         
-        use_adaptive_batch = st.checkbox("Enable Adaptive Batch Size", value=True)
-        batch_size = 16 if use_adaptive_batch else st.slider("Batch Size:", 4, 128, 16, 4)
+        use_adaptive_batch = st.checkbox("Enable Adaptive Batch Size", value=True, help="Automatically adjust batch size for Reptile.")
+        batch_size_help = "Number of samples per gradient update. Ignored if adaptive batch size is enabled."
+        batch_size = 16 if use_adaptive_batch else st.slider("Batch Size:", 4, 128, 16, 4, help=batch_size_help)
         
-        reptile_epochs = st.slider("Training Epochs:", 10, 300, defaults["reptile_epochs"], 10)
-        reptile_num_tasks = st.slider("Number of Tasks:", 2, 10, defaults["reptile_num_tasks"], 1)
+        reptile_epochs = st.slider("Training Epochs:", 10, 300, defaults["reptile_epochs"], 10, help="Number of epochs for Reptile training.")
+        reptile_num_tasks = st.slider("Number of Tasks:", 2, 10, defaults["reptile_num_tasks"], 1, help="Number of tasks to sample per Reptile training epoch.")
         
         default_curiosity = defaults["curiosity"]
         if "curiosity_loaded_value" in st.session_state:
             default_curiosity = st.session_state.curiosity_loaded_value
-        curiosity = st.slider("Exploit (-2) vs Explore (+2)", -2.0, 2.0, default_curiosity, 0.1, key="reptile_curiosity") # Added key
-        strict_optimization = st.checkbox("Strict Optimization Direction", value=True)
+        curiosity_help = "Adjusts the exploration-exploitation balance for Reptile."
+        curiosity = st.slider("Exploit (-2) vs Explore (+2)", -2.0, 2.0, default_curiosity, 0.1, key="reptile_curiosity", help=curiosity_help)
+        strict_optimization = st.checkbox("Strict Optimization Direction", value=True, help="If checked, ensures Reptile strictly follows the optimization direction (max/min) for the primary target, potentially overriding utility for highest/lowest predicted values.")
         
         if curiosity < -1.0:
             st.info("Current strategy: Strong exploitation - focusing on known good regions")
@@ -424,26 +430,27 @@ elif model_type == "ProtoNet":
     st.sidebar.subheader("ProtoNet Model Configuration")
     
     with st.sidebar.expander("Network Architecture", expanded=False):
-        embedding_size = st.slider("Embedding Size:", 64, 512, 128, 32)
-        num_layers = st.slider("Number of Layers:", 2, 5, 3, 1)
-        dropout_rate = st.slider("Dropout Rate:", 0.0, 0.5, 0.3, 0.05)
+        embedding_size = st.slider("Embedding Size:", 64, 512, 128, 32, help="Size of the embedding space for ProtoNet.")
+        num_layers = st.slider("Number of Layers (Encoder):", 2, 5, 3, 1, help="Number of layers in the ProtoNet encoder.")
+        dropout_rate = st.slider("Dropout Rate (Encoder):", 0.0, 0.5, 0.3, 0.05, help="Dropout probability for ProtoNet's encoder.")
     
     with st.sidebar.expander("Training Parameters", expanded=True):
-        if "protonet_learning_rate" not in st.session_state:
+        if "protonet_learning_rate" not in st.session_state: # Retain session state for this specific slider
             st.session_state["protonet_learning_rate"] = defaults["protonet_learning_rate"]
         
-        protonet_learning_rate = st.slider("Learning Rate:", 0.0001, 0.01, st.session_state["protonet_learning_rate"], 0.0001)
-        st.session_state["protonet_learning_rate"] = protonet_learning_rate
+        protonet_learning_rate = st.slider("Learning Rate:", 0.0001, 0.01, st.session_state["protonet_learning_rate"], 0.0001, help="Learning rate for ProtoNet training.")
+        st.session_state["protonet_learning_rate"] = protonet_learning_rate # Update session state
         
-        protonet_epochs = st.slider("Training Epochs:", 10, 300, defaults["protonet_epochs"], 10)
-        protonet_num_tasks = st.slider("Number of Tasks:", 2, 10, defaults["protonet_num_tasks"], 1)
-        num_shot = st.slider("Support Samples (N-shot):", 1, 8, 4, 1)
-        num_query = st.slider("Query Samples:", 1, 8, 4, 1)
+        protonet_epochs = st.slider("Training Epochs:", 10, 300, defaults["protonet_epochs"], 10, help="Number of epochs for ProtoNet training.")
+        protonet_num_tasks = st.slider("Number of Tasks (Episodes):", 2, 10, defaults["protonet_num_tasks"], 1, help="Number of episodes per ProtoNet training epoch.")
+        num_shot = st.slider("Support Samples (N-shot):", 1, 8, 4, 1, help="Number of support samples per class in each episode.")
+        num_query = st.slider("Query Samples:", 1, 8, 4, 1, help="Number of query samples per class in each episode.")
 
     default_curiosity = defaults["curiosity"]
     if "curiosity_loaded_value" in st.session_state:
         default_curiosity = st.session_state.curiosity_loaded_value
-    curiosity = st.slider("Exploit (-2) vs Explore (+2)", -2.0, 2.0, default_curiosity, 0.1, key="protonet_curiosity") # Added key
+    curiosity_help = "Adjusts the exploration-exploitation balance for ProtoNet."
+    curiosity = st.slider("Exploit (-2) vs Explore (+2)", -2.0, 2.0, default_curiosity, 0.1, key="protonet_curiosity", help=curiosity_help)
     if curiosity < -1.0:
         st.info("Current strategy: Strong exploitation - focusing on known good regions")
     elif curiosity < 0:
@@ -456,15 +463,16 @@ elif model_type == "ProtoNet":
 elif model_type == "Random Forest":
     st.sidebar.subheader("Random Forest Configuration")
     with st.sidebar.expander("Model Parameters", expanded=True):
-        rf_n_estimators = st.slider("Number of Estimators (Trees):", 50, 500, 100, 10, key="rf_n_estimators")
+        rf_n_estimators = st.slider("Number of Estimators (Trees):", 50, 500, 100, 10, key="rf_n_estimators", help="The number of trees in the forest.")
         # max_depth, min_samples_split, min_samples_leaf could be added if more control is needed
         # For now, keeping it simple.
-        rf_perform_grid_search = st.checkbox("Perform GridSearchCV (slower)", value=False, key="rf_grid_search")
+        rf_perform_grid_search = st.checkbox("Perform GridSearchCV (slower)", value=False, key="rf_grid_search", help="If checked, performs a grid search to find optimal hyperparameters for Random Forest. This can be significantly slower.")
 
     default_curiosity = defaults["curiosity"]
     if "curiosity_loaded_value" in st.session_state:
         default_curiosity = st.session_state.curiosity_loaded_value
-    curiosity = st.slider("Exploit (-2) vs Explore (+2)", -2.0, 2.0, default_curiosity, 0.1, key="rf_curiosity")
+    curiosity_help = "Adjusts the exploration-exploitation balance for Random Forest."
+    curiosity = st.slider("Exploit (-2) vs Explore (+2)", -2.0, 2.0, default_curiosity, 0.1, key="rf_curiosity", help=curiosity_help)
     if curiosity < -1.0:
         st.info("Current strategy: Strong exploitation - focusing on known good regions")
     elif curiosity < 0:
@@ -479,26 +487,32 @@ elif model_type == "Random Forest":
 st.sidebar.subheader("Optimization Strategy")
 use_bayesian_optimizer_for_suggestion = st.sidebar.checkbox(
     "Use Bayesian Optimizer for Next Suggestion",
-    value=False, # Default to False initially
-    help="If checked, uses the selected model as a surrogate within a Bayesian Optimization loop to score candidates. If unchecked, uses model-specific utility functions."
+    value=False,
+    help="If checked, the selected trained model (e.g., MAML, RF) will be used as a surrogate within a Bayesian Optimization loop. The BO will then use its own acquisition function (selected below) to score and rank candidate materials. If unchecked, the ranking is based on the model's direct utility/uncertainty estimates combined with the main curiosity slider."
 )
-acquisition_function_bo = "UCB" # Default for now, can be made selectable
+acquisition_function_bo = "UCB"
 if use_bayesian_optimizer_for_suggestion:
+    bo_acq_help = """
+    Select the acquisition function for the Bayesian Optimizer:
+    - UCB (Upper Confidence Bound): Balances exploration and exploitation. Good default.
+    - EI (Expected Improvement): Focuses on improving over the best observed point. Good for exploitation.
+    - PI (Probability of Improvement): Similar to EI, but focuses on probability rather than magnitude of improvement.
+    """
     acquisition_function_bo = st.sidebar.selectbox(
         "BO Acquisition Function:",
-        options=["UCB", "EI", "PI"], # MaxEntropy is more for pure exploration, less common as primary BO acq
+        options=["UCB", "EI", "PI"],
         index=0,
         format_func=lambda x: {"UCB": "Upper Confidence Bound", "EI": "Expected Improvement", "PI": "Probability of Improvement"}.get(x, x),
-        help="Select the acquisition function for the Bayesian Optimizer."
+        help=bo_acq_help
     )
 
 
 # Add ensemble option after model selection
 st.subheader("Ensemble Settings")
 use_ensemble = st.checkbox(
-    "Use Model Ensemble", 
+    "Use Model Ensemble",
     value=False,
-    help="Combine multiple models for more robust predictions. Requires extra computation time."
+    help="Combines predictions from multiple models (MAML, Reptile, ProtoNet) for potentially more robust and accurate suggestions. This will take longer as each selected model needs to be trained."
 )
 
 if use_ensemble:
@@ -506,18 +520,24 @@ if use_ensemble:
     
     with ensemble_col1:
         ensemble_models = st.multiselect(
-            "Models to Include:",
-            ["MAML", "Reptile", "ProtoNet"],
-            default=[model_type],  # Start with currently selected model
-            help="Select which models to include in the ensemble"
+            "Models to Include in Ensemble:",
+            options=["MAML", "Reptile", "ProtoNet"],
+            default=[model_type] if model_type in ["MAML", "Reptile", "ProtoNet"] else ["MAML"], # Start with currently selected model if compatible
+            help="Select the meta-learning models to include in the ensemble. Random Forest is not available for ensembling in the current setup."
         )
     
     with ensemble_col2:
+        weighting_help = """
+        Method to combine predictions from ensemble members:
+        - Equal: All models contribute equally.
+        - Performance-based: Models are weighted based on their performance on validation data (if available).
+        - Uncertainty-based: Models that are more confident (lower uncertainty) are given higher weight. (Note: May require specific uncertainty calibration).
+        """
         weighting_method = st.selectbox(
-            "Ensemble Weighting:",
-            ["Equal", "Performance-based", "Uncertainty-based"],
-            index=1,
-            help="Method to weight models in the ensemble"
+            "Ensemble Weighting Method:",
+            options=["Equal", "Performance-based", "Uncertainty-based"],
+            index=1, # Default to Performance-based
+            help=weighting_help
         )
 
 
@@ -643,9 +663,9 @@ if data is not None:
     if len(input_columns) > 0 and len(target_columns) > 0:
         st.subheader("Feature Selection")
         use_feature_selection = st.checkbox(
-            "Use Automated Feature Selection", 
+            "Use Automated Feature Selection",
             value=False,
-            help="Automatically select the most important features to improve model performance"
+            help="Automatically select a subset of the most important input features using statistical methods and correlation analysis. This can improve model performance and interpretability, especially with high-dimensional data."
         )
         
         if use_feature_selection:
@@ -653,17 +673,19 @@ if data is not None:
             
             fs_col1, fs_col2 = st.columns(2)
             with fs_col1:
+                min_features_help = "Minimum number of features to retain after selection."
                 min_features = st.slider(
-                    "Minimum Features", 3, 10, 3, 1,
-                    help="Minimum number of features to select"
+                    "Minimum Features to Select", 3, 10, 3, 1,
+                    help=min_features_help
                 )
             with fs_col2:
+                max_features_help = "Maximum number of features to retain after selection. Cannot exceed total available features."
                 max_features = st.slider(
-                    "Maximum Features", 5, min(20, len(input_columns)), min(10, len(input_columns)), 1,
-                    help="Maximum number of features to select"
+                    "Maximum Features to Select", 5, min(20, len(input_columns)), min(10, len(input_columns)), 1,
+                    help=max_features_help
                 )
             
-            with st.spinner("Running feature selection..."):
+            with st.spinner("Running automated feature selection... This may take a moment."):
                 selected_features = meta_feature_selection(
                     data, input_columns, target_columns,
                     min_features=min_features,
@@ -679,7 +701,11 @@ if data is not None:
         if "constraints" not in st.session_state:
             st.session_state.constraints = {col: {"min": None, "max": None} for col in data.columns}
 
+        constraints_help = "Define minimum and/or maximum allowable values for each input feature. This will filter the dataset *before* training and evaluation to only include samples respecting these bounds. Also used by some suggestion algorithms."
         expander_constraints = st.expander("Define Min/Max Constraints for Input Features", expanded=False)
+        if expander_constraints: # Only show help if expander is manually opened by user
+            expander_constraints.info(constraints_help)
+
         with expander_constraints:
             for col in input_columns:
                 # Ensure new columns are added to session state if input_columns change
@@ -705,21 +731,23 @@ if data is not None:
                     st.session_state.constraints[col]["max"] = st.session_state.constraints[col]["min"]
                     # Rerun to update the UI element value for max if we corrected it (may not be immediate in Streamlit)
 
-            st.markdown("---") # Separator
-            st.markdown("##### Define Sum Constraint (e.g., for compositional data sum to 1 or 100)")
+            st.markdown("---")
+            st.markdown("##### Define Sum Constraint")
+            st.info("Useful for compositional data where selected features should sum to a specific value (e.g., 1.0 for fractions, 100 for percentages). This filters the dataset before training/evaluation.")
 
             if "sum_constraint_cols" not in st.session_state:
                 st.session_state.sum_constraint_cols = []
             if "sum_constraint_target" not in st.session_state:
-                st.session_state.sum_constraint_target = 1.0 # Default to 1.0, common for proportions
+                st.session_state.sum_constraint_target = 1.0
             if "sum_constraint_tolerance" not in st.session_state:
-                st.session_state.sum_constraint_tolerance = 0.01 # Default tolerance
+                st.session_state.sum_constraint_tolerance = 0.01
 
             selected_sum_cols = st.multiselect(
                 "Select features for sum constraint:",
                 options=input_columns,
                 default=st.session_state.sum_constraint_cols,
-                key="sum_constraint_features_multiselect"
+                key="sum_constraint_features_multiselect",
+                help="Choose two or more input features whose sum should meet the target value."
             )
             st.session_state.sum_constraint_cols = selected_sum_cols
 
@@ -727,7 +755,8 @@ if data is not None:
                 "Target sum for selected features:",
                 value=st.session_state.sum_constraint_target,
                 format="%g",
-                key="sum_constraint_target_value"
+                key="sum_constraint_target_value",
+                help="The value the selected features should sum to (e.g., 1.0 or 100.0)."
             )
             st.session_state.sum_constraint_target = float(target_sum_val) if target_sum_val is not None else None
 
@@ -736,7 +765,8 @@ if data is not None:
                 value=st.session_state.sum_constraint_tolerance,
                 min_value=0.0,
                 format="%g",
-                key="sum_constraint_tolerance_value"
+                key="sum_constraint_tolerance_value",
+                help="Allowable deviation from the target sum (e.g., a tolerance of 0.01 for a target sum of 1.0 means sums between 0.99 and 1.01 are accepted)."
             )
             st.session_state.sum_constraint_tolerance = float(target_sum_tolerance) if target_sum_tolerance is not None else 0.0
 
@@ -755,12 +785,17 @@ if data is not None:
         if len(target_columns) > 1:
             mobo_options = ["weighted_sum", "parego"]
             mobo_idx = mobo_options.index(default_mobo_strategy) if default_mobo_strategy in mobo_options else 0
+            mobo_strategy_help = """
+            Strategy for handling multiple target properties:
+            - Weighted Sum: Combines objectives into a single score using fixed weights defined below. Simple and effective if weights are well-chosen.
+            - ParEGO: A Bayesian Optimization strategy that uses random scalarizations. Good for exploring non-convex Pareto fronts but can be computationally more intensive if BO is used for suggestions.
+            """
             mobo_strategy = st.selectbox(
                 "Multi-Objective Strategy:",
                 options=mobo_options,
                 index=mobo_idx,
                 format_func=lambda x: "Weighted Sum (Fixed Weights)" if x == "weighted_sum" else "ParEGO (Randomized Weights)",
-                help="Choose how to handle multiple objectives. ParEGO can help explore non-convex Pareto fronts.",
+                help=mobo_strategy_help,
                 key="mobo_strategy_selector"
             )
         
@@ -772,9 +807,9 @@ if data is not None:
             ("A Priori", apriori_columns, max_or_min_apriori, weights_apriori, thresholds_apriori, "apriori")
         ]:
             if columns:
-                st.markdown(f"#### {category} Properties")
+                st.markdown(f"#### {category} Properties Configuration")
+                st.info(f"Define optimization direction, importance (weight), and optional thresholds for each {category.lower()} property.")
                 
-                # Create multiple columns for more compact UI
                 col_per_property = 3
                 properties_per_row = 3
                 
@@ -782,31 +817,34 @@ if data is not None:
                     property_group = columns[i:i+properties_per_row]
                     property_cols = st.columns(len(property_group))
                     
-                    for j, col in enumerate(property_group):
+                    for j, col_name in enumerate(property_group):
                         with property_cols[j]:
-                            st.markdown(f"**{col}**")
+                            st.markdown(f"**{col_name}**")
                             
                             optimize_for = st.radio(
-                                f"Optimize for:",
+                                "Optimize for:", # Label made generic, context is col_name
                                 ["Maximize", "Minimize"],
-                                index=0,
-                                key=f"{key_prefix}_opt_{col}",
-                                horizontal=True
+                                index=0, # Default to Maximize
+                                key=f"{key_prefix}_opt_{col_name}",
+                                horizontal=True,
+                                help=f"Should the model aim to maximize or minimize '{col_name}'?"
                             )
                             
                             weight = st.number_input(
-                                f"Weight:",
+                                "Weight:", # Label made generic
                                 value=1.0, 
                                 step=0.1, 
                                 min_value=0.1,
                                 max_value=10.0,
-                                key=f"{key_prefix}_weight_{col}"
+                                key=f"{key_prefix}_weight_{col_name}",
+                                help=f"Relative importance of '{col_name}' in utility calculations (higher means more important)."
                             )
                             
                             threshold = st.text_input(
-                                f"Threshold:",
+                                "Threshold:", # Label made generic
                                 value="", 
-                                key=f"{key_prefix}_threshold_{col}"
+                                key=f"{key_prefix}_threshold_{col_name}",
+                                help=f"Optional. If set, samples not meeting this threshold for '{col_name}' will be penalized or filtered in utility calculations. E.g., '>10' or '<5'."
                             )
                             
                             max_or_min_list.append("max" if optimize_for == "Maximize" else "min")

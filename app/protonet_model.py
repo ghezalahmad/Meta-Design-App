@@ -7,9 +7,10 @@ from sklearn.preprocessing import StandardScaler, RobustScaler
 from sklearn.cluster import KMeans
 import streamlit as st
 from app.utils import (
-    calculate_utility, calculate_novelty, calculate_uncertainty,
+    calculate_utility, calculate_novelty, # calculate_uncertainty removed
     initialize_scheduler, balance_exploration_exploitation
 )
+# calculate_uncertainty_ensemble will be imported from app.models where needed
 
 class ProtoNetModel(nn.Module):
     def __init__(self, input_size, output_size, embedding_size=256, num_layers=3, dropout_rate=0.3):
@@ -119,35 +120,43 @@ class ProtoNetModel(nn.Module):
             dropout_rate (float): Dropout rate to use during MC sampling for uncertainty.
 
         Returns:
-            tuple: (mean_predictions_original_scale, std_dev_original_scale_per_sample)
+            tuple: (mean_predictions_original_scale, std_dev_original_scale_per_sample, Optional[mc_samples_original_scale])
                    mean_predictions_original_scale (np.ndarray): Predictions in the original target scale.
                    std_dev_original_scale_per_sample (np.ndarray): Standard deviation of predictions (per sample) in original target scale.
+                   mc_samples_original_scale (np.ndarray, optional): MC samples in original target scale.
         """
         if not getattr(self, 'is_trained', False) or self.scaler_x is None or self.scaler_y is None:
             raise RuntimeError("Model is not trained yet or scalers are missing. Call protonet_train first.")
 
         self.eval() # Ensure model is in eval mode for mean prediction
-
         X_processed = X_df_original_scale[input_columns]
         X_scaled_np = self.scaler_x.transform(X_processed)
         X_tensor = torch.tensor(X_scaled_np, dtype=torch.float32)
 
-        # Get mean predictions (scaled) using the model's forward pass
         with torch.no_grad():
             mean_predictions_scaled = self(X_tensor).numpy()
 
-        # Inverse transform mean predictions
         mean_predictions_original_scale = self.scaler_y.inverse_transform(mean_predictions_scaled)
 
-        # Get uncertainty (variance-like, scaled) using app.utils.calculate_uncertainty
-        from app.utils import calculate_uncertainty as util_calc_uncertainty
+        from app.models import calculate_uncertainty_ensemble
+        variance_scaled_per_sample, mc_samples_scaled_torch = calculate_uncertainty_ensemble(
+            model=self, X=X_tensor,
+            num_samples=num_perturbations,
+            dropout_rate=dropout_rate,
+            use_input_perturbation=True, # ProtoNet model was using this
+            noise_scale=noise_scale
+        )
+        if variance_scaled_per_sample.ndim == 1:
+            variance_scaled_per_sample = variance_scaled_per_sample.reshape(-1, 1)
 
-        variance_scaled_per_sample = util_calc_uncertainty(
-            self, X_tensor,
-            num_perturbations=num_perturbations,
-            noise_scale=noise_scale,
-            dropout_rate=dropout_rate
-        ) # Shape (n_samples, 1)
+        mc_samples_original_scale = None
+        if mc_samples_scaled_torch is not None:
+            mc_samples_scaled_np = mc_samples_scaled_torch.cpu().numpy()
+            mc_samples_original_scale_list = []
+            for i in range(mc_samples_scaled_np.shape[0]):
+                sample_slice_scaled = mc_samples_scaled_np[i, :, :]
+                mc_samples_original_scale_list.append(self.scaler_y.inverse_transform(sample_slice_scaled))
+            mc_samples_original_scale = np.stack(mc_samples_original_scale_list, axis=0)
 
         # Inverse transform uncertainty (variance -> std_dev)
         scale_sq = self.scaler_y.scale_ ** 2
@@ -163,7 +172,7 @@ class ProtoNetModel(nn.Module):
 
         std_dev_original_scale_per_sample = np.sqrt(np.maximum(variance_original_scale, 1e-12))
 
-        return mean_predictions_original_scale, std_dev_original_scale_per_sample.reshape(-1, 1)
+        return mean_predictions_original_scale, std_dev_original_scale_per_sample.reshape(-1, 1), mc_samples_original_scale
 
 
 def euclidean_distance(x, y):
@@ -622,13 +631,19 @@ def evaluate_protonet(model, data, input_columns, target_columns, curiosity, wei
             st.info("📈 Using direct neural network prediction (sufficient data)")
             predictions_scaled = model(inputs_infer_tensor).numpy()
     
-    # Calculate uncertainty using Monte Carlo dropout
-    model.train()  # Enable dropout for uncertainty estimation
-    uncertainty_scores = calculate_uncertainty(
-        model, 
-        inputs_infer_tensor, 
-        num_perturbations=50
+    # Calculate uncertainty using Monte Carlo dropout from app.models
+    from app.models import calculate_uncertainty_ensemble
+    # model.train() is handled by calculate_uncertainty_ensemble
+    uncertainty_scores = calculate_uncertainty_ensemble(
+        model=model,
+        X=inputs_infer_tensor,
+        num_samples=50, # Corresponds to num_perturbations
+        dropout_rate=0.3, # Default dropout rate
+        use_input_perturbation=True, # ProtoNet's old uncertainty used input perturbation
+        noise_scale=0.05 # Default noise scale
     )
+    if uncertainty_scores.ndim == 1: # Ensure shape (n_samples, 1)
+        uncertainty_scores = uncertainty_scores.reshape(-1, 1)
     
     # Inverse transform predictions to original scale
     predictions = scaler_targets.inverse_transform(predictions_scaled)

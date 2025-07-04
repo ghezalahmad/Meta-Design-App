@@ -31,19 +31,34 @@ class BayesianOptimizer:
     and support for exploration-exploitation trade-off.
     """
     
-    def __init__(self, surrogate_model=None, bounds=None, kernel=None, alpha=1e-6, n_restarts=10, normalize_y=True):
+    def __init__(self, surrogate_model=None, bounds=None, kernel=None, alpha=1e-6, n_restarts=10, normalize_y=True, target_index_for_surrogate=0):
         """
         Initialize the Bayesian optimizer.
         
         Parameters:
         -----------
         surrogate_model : object, optional
-            A pre-trained surrogate model instance. Must implement a method like
-            `predict_with_uncertainty(X)` which returns (mean, uncertainty_metric)
-            and have an attribute `is_trained` (boolean) and `scaler_x`, `scaler_y` if it uses them.
-            If None, an internal GaussianProcessRegressor will be used.
-        bounds : dict
-            Dictionary mapping feature names to (lower, upper) bounds for internal GP optimization.
+            A pre-trained surrogate model instance. If provided, it must adhere to the following interface:
+            - `is_trained` (bool attribute): Indicates if the model has been trained.
+            - `predict_with_uncertainty(X, input_columns=None, num_samples=None)` (method):
+                - `X`: Input data (pd.DataFrame or np.ndarray).
+                - `input_columns` (list[str], optional): Names of input columns if X is a DataFrame or if needed by the model.
+                - `num_samples` (int, optional): Hint for the number of MC samples if the model uses sampling for uncertainty/posterior.
+                - Returns: A tuple.
+                    - If `num_samples` (or an internal equivalent for posterior sampling) is used and successful:
+                      `(mean_preds, std_devs, posterior_samples)`
+                    - Else:
+                      `(mean_preds, std_devs)`
+                - `mean_preds` (np.ndarray): Shape (n_points, n_surrogate_targets).
+                - `std_devs` (np.ndarray): Shape (n_points, n_surrogate_targets) or (n_points, 1).
+                - `posterior_samples` (np.ndarray, optional): Shape (n_mc_samples, n_points, n_surrogate_targets).
+                - All predictions and uncertainties should be in the *original scale* of the target(s).
+            - `scaler_x` (object, optional): If present and has `feature_names_in_`, these will be used as input_columns.
+            The BayesianOptimizer's `fit` method does NOT train this external surrogate.
+            If None, an internal GaussianProcessRegressor will be used for single-objective optimization.
+        bounds : dict, optional
+            Dictionary mapping feature names to (lower, upper) bounds. Used if `X_train` passed to `fit`
+            is a NumPy array, or for the `optimize` method's bounds.
         kernel : sklearn.gaussian_process.kernels.Kernel
             Kernel for the internal Gaussian Process if surrogate_model is None.
         alpha : float
@@ -58,40 +73,45 @@ class BayesianOptimizer:
         self.X_train = None
         self.y_train = None # Will store original scale y_train for acquisition functions like EI/PI
         self.is_fitted = False
+        self.target_index = target_index_for_surrogate
 
         if self.surrogate_model is not None:
             if not hasattr(self.surrogate_model, 'predict_with_uncertainty') or \
                not callable(self.surrogate_model.predict_with_uncertainty):
                 raise ValueError("Provided surrogate_model must have a 'predict_with_uncertainty' method.")
-            # We assume a pre-trained surrogate model is already fitted.
-            # The `fit` method of BayesianOptimizer will primarily handle data for acquisition functions.
-            self.gp = None # No internal GP needed
+            self.gp = None
             self.kernel = None
         else:
-            # Default kernel: Matern 5/2 with noise component
             if kernel is None:
                 self.kernel = ConstantKernel(1.0) * Matern(length_scale=1.0, nu=2.5) + WhiteKernel(noise_level=0.1)
             else:
                 self.kernel = kernel
-
             self.gp = GaussianProcessRegressor(
-                kernel=self.kernel,
-                alpha=alpha,
-                n_restarts_optimizer=n_restarts,
-                normalize_y=normalize_y,
-                random_state=42
+                kernel=self.kernel, alpha=alpha, n_restarts_optimizer=n_restarts,
+                normalize_y=normalize_y, random_state=42
             )
     
-    def fit(self, X, y):
+    def fit(self, X: pd.DataFrame | np.ndarray, y: np.ndarray):
         """
-        Fit the Gaussian Process model.
-        
-        Parameters:
-        -----------
-        X : numpy.ndarray
-            Input features (n_samples, n_features)
-        y : numpy.ndarray
-            Target values (n_samples, n_targets)
+        Fits the Bayesian Optimizer.
+
+        If an internal Gaussian Process (GP) is used (i.e., `surrogate_model` was None
+        at initialization), this method fits the GP to the provided data `X` and `y`.
+
+        If an external `surrogate_model` was provided, this method primarily stores `X`
+        and `y` (specifically `y_train` in original scale) for use by acquisition
+        functions like Expected Improvement (EI) and Probability of Improvement (PI)
+        which require knowledge of the best observed `y` value. The external
+        surrogate model is assumed to be already trained.
+
+        Args:
+            X: Input features. Can be a pandas DataFrame or a NumPy array.
+               Shape (n_samples, n_features).
+            y: Target values. NumPy array, shape (n_samples,) or (n_samples, n_targets).
+               For single-objective BO, if `y` is multi-target, the target specified
+               by `self.target_index` during `__init__` will be used implicitly by
+               acquisition functions if the surrogate model returns sliced outputs,
+               or `y_train` will store all targets for reference.
         """
         # Handle 1D y
         if y.ndim == 1:
@@ -173,106 +193,200 @@ class BayesianOptimizer:
         
         return self.gp.predict(X, return_std=return_std)
 
-    def _get_surrogate_prediction(self, X_np: np.ndarray):
+    def _get_surrogate_prediction(self, X_np: np.ndarray, return_posterior_samples: bool = False,
+                                   n_posterior_samples: int = 50) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
         """
-        Gets prediction (mean and std_dev) from the active surrogate model (either internal GP or provided external model).
-        Ensures X_np is temporarily converted to DataFrame if needed by the surrogate.
+        Retrieves predictions (mean, std_dev) and optionally posterior samples
+        from the active surrogate model (either internal GP or a provided external model).
+
+        Handles conversion of `X_np` to a pandas DataFrame if the surrogate model
+        is expected to require it (e.g., based on `input_columns` derived from
+        training data or bounds).
+
+        If the surrogate model is multi-output, this method will select the target
+        slice corresponding to `self.target_index` for `mu`, `sigma`, and
+        `posterior_samples` before returning them.
 
         Args:
-            X_np (np.ndarray): Input features in original scale.
+            X_np: Input features as a NumPy array, in their original scale.
+                  Shape (n_points, n_features).
+            return_posterior_samples: If True, attempts to obtain posterior samples
+                                      from the surrogate.
+            n_posterior_samples: The number of posterior samples to request if
+                                 `return_posterior_samples` is True.
 
         Returns:
-            tuple: (mu, sigma) - mean predictions and standard deviations, both in original target scale.
+            A tuple `(mu, sigma, posterior_samples)`:
+            - `mu`: Mean predictions, shape (n_points,).
+            - `sigma`: Standard deviation of predictions, shape (n_points,).
+            - `posterior_samples`: Posterior samples, shape (n_posterior_samples, n_points)
+                                   if `return_posterior_samples` is True and samples are
+                                   obtained; otherwise None. All outputs are for the
+                                   selected `self.target_index` and in original target scale.
         """
         if not self.is_fitted:
             raise ValueError("BayesianOptimizer not fitted yet. Call fit() first.")
 
+        posterior_samples = None
+
         if self.surrogate_model:
-            # Assuming surrogate_model.predict_with_uncertainty expects X and input_columns (if it's like RFModel)
-            # The input_columns can be derived from self.bounds if set during optimize, or self.X_train
             input_cols = None
-            # Try to get input_columns from the surrogate's scaler first, then from BO's context
             if hasattr(self.surrogate_model, 'scaler_x') and self.surrogate_model.scaler_x and \
                hasattr(self.surrogate_model.scaler_x, 'feature_names_in_') and \
                self.surrogate_model.scaler_x.feature_names_in_ is not None:
                 input_cols = self.surrogate_model.scaler_x.feature_names_in_
-            elif self.X_train_df_columns: # From data passed to BO.fit() if X was a DataFrame
+            elif self.X_train_df_columns:
                 input_cols = self.X_train_df_columns
-            elif self.bounds: # From BO.optimize() method if bounds_dict was provided
+            elif self.bounds:
                 input_cols = list(self.bounds.keys())
 
-            if input_cols is None and X_np.shape[1] > 0 : # Check if X_np has features
-                 # If surrogate is an sklearn pipeline, it might get feature names from training data.
-                 # Fallback: assume surrogate can handle numpy array or doesn't need explicit column names for predict_with_uncertainty
-                 # This might be true for some simple function-based surrogates or if X_np is already a DataFrame.
-                 # Our current RF and NN models expect DataFrame and input_columns for their predict_with_uncertainty.
-                 # This path might lead to errors if input_cols are truly needed and not found.
-                st.warning("BayesianOptimizer: input_columns not determined for surrogate model. "
-                           "Surrogate must handle NumPy array input for predict_with_uncertainty or this may fail.")
-                mu, sigma = self.surrogate_model.predict_with_uncertainty(X_np) # sigma is std_dev
-            elif input_cols is not None:
+            X_input_for_surrogate = X_np
+            if input_cols:
                 if X_np.shape[1] != len(input_cols):
                     raise ValueError(f"Shape mismatch: X_np has {X_np.shape[1]} features, but found {len(input_cols)} input_columns.")
-                X_df = pd.DataFrame(X_np, columns=input_cols)
-                # All our current custom models (RF, MAML, Reptile, ProtoNet) have predict_with_uncertainty
-                # that takes (X_df, input_columns=input_columns)
-                mu, sigma = self.surrogate_model.predict_with_uncertainty(X_df, input_columns=input_cols) # sigma is std_dev
-            else: # No input_cols and X_np has no features (e.g. X_np.shape[1] == 0), this is an issue.
-                 raise ValueError("BayesianOptimizer: Cannot determine input columns and X_np has no features.")
+                X_input_for_surrogate = pd.DataFrame(X_np, columns=input_cols)
+            elif not isinstance(X_np, pd.DataFrame):
+                 st.warning("BayesianOptimizer: input_columns not determined for surrogate, and X_np is not DataFrame. Surrogate must handle raw NumPy array.")
+
+
+            # Check if the surrogate's predict_with_uncertainty supports returning samples
+            # This is a bit of duck typing based on our MAMLModel change.
+            # A more robust way would be an explicit capability flag on the surrogate.
+            try:
+                # Attempt to unpack three values if return_posterior_samples is True
+                if return_posterior_samples and hasattr(self.surrogate_model, 'predict_with_uncertainty'):
+                    # Assuming our NN models now might take num_samples for their predict_with_uncertainty
+                    # to control the number of MC samples for the posterior.
+                    # This is a bit of an API assumption for external surrogates.
+                    # For now, let's assume if the method exists, it behaves like our updated MAMLModel.
+                    pred_output = self.surrogate_model.predict_with_uncertainty(
+                        X_input_for_surrogate,
+                        input_columns=input_cols, # Pass None if not determined, surrogate must handle
+                        num_samples=n_posterior_samples # For MAMLModel and similar
+                    )
+                    if len(pred_output) == 3:
+                        mu, sigma, posterior_samples = pred_output
+                    elif len(pred_output) == 2:
+                        mu, sigma = pred_output
+                        if return_posterior_samples:
+                            st.warning("Surrogate model's predict_with_uncertainty did not return posterior samples as requested.")
+                    else:
+                        raise ValueError("Surrogate model's predict_with_uncertainty returned unexpected number of values.")
+                elif hasattr(self.surrogate_model, 'predict_with_uncertainty'):
+                     mu, sigma = self.surrogate_model.predict_with_uncertainty(
+                        X_input_for_surrogate,
+                        input_columns=input_cols
+                        # num_samples not passed if not requesting posterior
+                    )
+                else: # Fallback if no predict_with_uncertainty, try standard predict and assign high uncertainty
+                    mu = self.surrogate_model.predict(X_input_for_surrogate)
+                    sigma = np.ones_like(mu) * np.std(mu) # A very rough placeholder for uncertainty
+                    st.warning("Surrogate model lacks 'predict_with_uncertainty'. Using 'predict' and estimating sigma.")
+
+            except TypeError as e: # Handles cases where num_samples is not an arg for some surrogates
+                if "unexpected keyword argument 'num_samples'" in str(e) and hasattr(self.surrogate_model, 'predict_with_uncertainty'):
+                    mu, sigma = self.surrogate_model.predict_with_uncertainty(X_input_for_surrogate, input_columns=input_cols)
+                    if return_posterior_samples:
+                        st.warning("Surrogate model's predict_with_uncertainty does not support 'num_samples' and did not return posterior samples.")
+                else:
+                    raise e # Re-raise other TypeErrors
 
         elif self.gp:
-            mu, sigma = self._predict_with_internal_gp(X_np, return_std=True)
+            if return_posterior_samples:
+                mu = self.gp.predict(X_np) # mean
+                posterior_samples_gp = self.gp.sample_y(X_np, n_samples=n_posterior_samples, random_state=np.random.randint(10000))
+                # sample_y returns (n_points, n_samples). Need (n_samples, n_points)
+                posterior_samples = posterior_samples_gp.T
+                if posterior_samples.ndim == 2 and self.gp.y_train_.ndim > 1 and self.gp.y_train_.shape[1] > 1:
+                    # If internal GP is multi-output, sample_y might be more complex.
+                    # For now, assume single primary output for GP's sample_y in this context or it handles multi-output correctly.
+                    # If gp.y_train_ was (n_samples, n_targets), sample_y might be (n_points, n_targets, n_mc_samples)
+                    # The current sklearn GP sample_y is (n_points, n_mc_samples) for single target.
+                    # And (n_points, n_targets, n_mc_samples) for multi-target if kernel supports it.
+                    # We need (n_mc_samples, n_points, n_targets)
+                    if posterior_samples.shape[-1] == X_np.shape[0] and self.gp.y_train_.shape[1] > 1: # (n_targets, n_mc_samples, n_points) -> (n_mc_samples, n_points, n_targets)
+                         # This part needs careful check of sklearn GP's sample_y for multi-output
+                         st.warning("Handling of multi-output GP posterior samples needs verification.")
+                         # Assuming sample_y for multi-output GP might be (n_points, n_targets, n_mc_samples)
+                         # We need to transpose to (n_mc_samples, n_points, n_targets)
+                         if posterior_samples_gp.ndim ==3 and posterior_samples_gp.shape[0] == X_np.shape[0] and posterior_samples_gp.shape[2] == n_posterior_samples:
+                              posterior_samples = np.transpose(posterior_samples_gp, (2,0,1))
+
+
+                sigma = np.std(posterior_samples, axis=0) # Calculate sigma from samples
+            else:
+                mu, sigma = self._predict_with_internal_gp(X_np, return_std=True)
         else:
             raise RuntimeError("No surrogate model or internal GP available for prediction.")
 
-        # Ensure mu is (n_samples,) or (n_samples, 1) and sigma is (n_samples,)
-        # Predictions from models are expected to be (n_samples, n_targets)
-        # Acquisition functions here are single-objective, so they expect single mu/sigma.
-        # If surrogate is multi-output, this needs careful handling.
-        # For now, assume mu and sigma are for the primary target or already scalarized.
-        if mu.ndim > 1:
-            if mu.shape[1] > 1:
-                st.warning("BayesianOptimizer: Surrogate model returned multiple target predictions. Using first target for acquisition.")
-                mu = mu[:, 0]
-            else: # mu.shape[1] == 1
-                mu = mu.ravel()
+        # Ensure mu is (n_samples,) or (n_samples, 1) and sigma is (n_samples,) for single-objective BO.
+        # If surrogate is multi-output, select the target specified by self.target_index.
+        if mu.ndim > 1 and mu.shape[1] > 1:
+            if self.target_index >= mu.shape[1]:
+                st.error(f"target_index {self.target_index} is out of bounds for surrogate model with {mu.shape[1]} outputs. Using index 0.")
+                current_target_index = 0
+            else:
+                current_target_index = self.target_index
+            st.info(f"Surrogate is multi-output. Using target index {current_target_index} for BO.")
+            mu = mu[:, current_target_index]
+        elif mu.ndim > 1 and mu.shape[1] == 1:
+            mu = mu.ravel()
 
-        if sigma.ndim > 1:
-            if sigma.shape[1] > 1:
-                st.warning("BayesianOptimizer: Surrogate model returned multiple target uncertainties. Using first target for acquisition.")
-                sigma = sigma[:, 0]
-            else: # sigma.shape[1] == 1
-                sigma = sigma.ravel()
+        if sigma.ndim > 1 and sigma.shape[1] > 1:
+            if self.target_index >= sigma.shape[1]:
+                # This case implies sigma has per-target uncertainties
+                st.error(f"target_index {self.target_index} is out of bounds for surrogate uncertainty with {sigma.shape[1]} outputs. Using index 0.")
+                current_target_index_sigma = 0
+            else:
+                current_target_index_sigma = self.target_index
+            sigma = sigma[:, current_target_index_sigma]
+        elif sigma.ndim > 1 and sigma.shape[1] == 1:
+            sigma = sigma.ravel()
+
+        # Posterior samples also need to be sliced if multi-target
+        if posterior_samples is not None and posterior_samples.ndim == 3 and posterior_samples.shape[2] > 1:
+            if self.target_index >= posterior_samples.shape[2]:
+                current_target_index_samples = 0 # Fallback
+            else:
+                current_target_index_samples = self.target_index
+            posterior_samples = posterior_samples[:, :, current_target_index_samples]
+            # Shape becomes (n_posterior_samples, num_input_points)
 
         return mu, sigma
     
-    def acquisition_function(self, X, acquisition="UCB", xi=0.01, kappa=2.0, curiosity=0.0):
+    def acquisition_function(self, X_np: np.ndarray, acquisition: str = "UCB",
+                             xi: float = 0.01, kappa: float = 2.0, curiosity: float = 0.0) -> np.ndarray:
         """
-        Compute acquisition function value for input points.
-        
-        Parameters:
-        -----------
-        X : numpy.ndarray
-            Input features (n_samples, n_features)
-        acquisition : str
-            Acquisition function type: "UCB", "EI", "PI", or "MaxEntropy"
-        xi : float
-            Exploration parameter for EI and PI
-        kappa : float
-            Exploration parameter for UCB
-        curiosity : float
-            Exploration vs exploitation parameter (-2 to +2)
-            
+        Computes the value of a specified acquisition function for given input points.
+
+        This method uses the surrogate model (internal GP or external) to get mean
+        and standard deviation predictions, then calculates the acquisition value.
+        The `curiosity` parameter adjusts `kappa` (for UCB) and `xi` (for EI, PI)
+        to balance exploration and exploitation.
+
+        Args:
+            X_np: Input points (NumPy array, shape (n_points, n_features)) for which
+                  to calculate acquisition values.
+            acquisition: The type of acquisition function to use.
+                         Options: "UCB", "EI", "PI", "MaxEntropy".
+            xi: Exploration parameter primarily for Expected Improvement (EI) and
+                Probability of Improvement (PI). Higher `xi` encourages more exploration.
+            kappa: Exploration parameter for Upper Confidence Bound (UCB).
+                   Higher `kappa` encourages more exploration.
+            curiosity: A general parameter (-2 to +2) that scales `kappa` and `xi`
+                       to tune the exploration-exploitation balance. Positive values
+                       increase exploration.
+
         Returns:
-        --------
-        values : numpy.ndarray
-            Acquisition function values (higher is better)
+            A NumPy array of acquisition function values, one for each input point.
+            Higher values indicate more promising points to evaluate next.
         """
         if not self.is_fitted: # This check is also in _get_surrogate_prediction, but good for early exit.
             raise ValueError("Model not fitted yet. Call fit() first.")
         
         # Get predictions and uncertainties using the new unified method
-        mu, sigma = self._get_surrogate_prediction(X)
+        # We don't need posterior samples for these standard acquisition functions.
+        mu, sigma, _ = self._get_surrogate_prediction(X, return_posterior_samples=False)
         
         # Ensure sigma is non-negative (it's std_dev) and not zero to avoid division errors.
         sigma = np.maximum(sigma, 1e-9) # Changed from 1e-6 to 1e-9 for potentially smaller std devs
@@ -321,34 +435,35 @@ class BayesianOptimizer:
         else:
             raise ValueError(f"Unknown acquisition function: {acquisition}")
     
-    def optimize(self, bounds_dict, n_restarts=20, acquisition="UCB", curiosity=0.0, 
-                n_points=1, min_distance=0.1, max_iter=500):
+    def optimize(self, bounds_dict: dict[str, tuple[float, float]], n_restarts: int = 20,
+                 acquisition: str = "UCB", curiosity: float = 0.0,
+                 n_points: int = 1, min_distance: float = 0.1, max_iter: int = 500) -> tuple[np.ndarray, np.ndarray]:
         """
-        Find the optimal point(s) according to the acquisition function.
-        
-        Parameters:
-        -----------
-        bounds_dict : dict
-            Dictionary mapping feature names to (lower, upper) bounds
-        n_restarts : int
-            Number of restarts for acquisition function optimization
-        acquisition : str
-            Acquisition function type
-        curiosity : float
-            Exploration vs exploitation parameter
-        n_points : int
-            Number of diverse points to return
-        min_distance : float
-            Minimum distance between returned points
-        max_iter : int
-            Maximum number of iterations for optimization
-            
+        Finds the optimal point(s) by maximizing the specified acquisition function.
+
+        This method uses `scipy.optimize.minimize` (on the negative acquisition
+        function) with L-BFGS-B algorithm, starting from multiple random points
+        within the given bounds, to find the point(s) that maximize the acquisition value.
+
+        If `n_points > 1`, it attempts to return a diverse set of points by ensuring
+        a minimum distance between them, selected greedily from the best points found.
+
+        Args:
+            bounds_dict: A dictionary where keys are feature names (strings) and
+                         values are tuples `(lower_bound, upper_bound)` for each feature.
+            n_restarts: Number of random starting points for the L-BFGS-B optimization.
+            acquisition: The acquisition function to optimize (e.g., "UCB", "EI").
+            curiosity: The curiosity parameter passed to the acquisition function.
+            n_points: The number of optimal points to return. If > 1, diversity is enforced.
+            min_distance: Minimum Euclidean distance between returned points if `n_points > 1`.
+            max_iter: Maximum number of iterations for each L-BFGS-B optimization run.
+
         Returns:
-        --------
-        X_best : numpy.ndarray
-            Optimal input points
-        values_best : numpy.ndarray
-            Acquisition function values at optimal points
+            A tuple `(X_optimal, acquisition_values)`:
+            - `X_optimal`: NumPy array of shape (n_points, n_features) containing the
+                           coordinates of the optimal point(s).
+            - `acquisition_values`: NumPy array of shape (n_points,) containing the
+                                    acquisition function values at the optimal point(s).
         """
         if not self.is_fitted:
             raise ValueError("Model not fitted yet. Call fit() first.")
@@ -427,6 +542,79 @@ class BayesianOptimizer:
         
         # Return top n_points
         return X_best[:n_points], values_best[:n_points]
+
+    def calculate_qUCB(self, X_batch_np: np.ndarray, n_posterior_samples: int = 50, kappa: float = 2.0) -> float:
+        """
+        Calculates the q-Upper Confidence Bound (qUCB) for a given batch of candidate points.
+
+        qUCB is a batch acquisition function that estimates the expected maximum value
+        among a batch of `q` points, considering the posterior distribution of the
+        surrogate model. This implementation uses a common approximation:
+        1. Draw `N` samples from the surrogate model's posterior distribution over the `q` batch points.
+           Each sample path gives `q` predicted values.
+        2. For each of these `N` sample paths, find the maximum predicted value among the `q` points.
+        3. The qUCB value is the average of these `N` maximums.
+
+        If the surrogate model is multi-output, calculations are based on the target
+        specified by `self.target_index`.
+
+        Args:
+            X_batch_np: A NumPy array representing the batch of `q` candidate points.
+                        Shape (q, n_features).
+            n_posterior_samples: The number of samples to draw from the surrogate's posterior.
+            kappa: A parameter that can be used to scale the exploration term if a
+                   different qUCB formulation (e.g., involving std dev of max values)
+                   was used. Currently, this implementation directly averages max values
+                   from posterior samples, so kappa is not directly used in that formula
+                   but is kept for interface consistency or future variations.
+
+        Returns:
+            The calculated qUCB value (float) for the provided batch of points.
+        """
+        if not self.is_fitted:
+            raise ValueError("Model not fitted yet. Call fit() first.")
+
+        # Get posterior samples for the batch
+        # _get_surrogate_prediction returns (mean, std, samples)
+        # samples shape: (n_posterior_samples, q_points, n_targets)
+        _, _, posterior_samples = self._get_surrogate_prediction(
+            X_batch_np,
+            return_posterior_samples=True,
+            n_posterior_samples=n_posterior_samples
+        )
+
+        if posterior_samples is None:
+            st.error("Could not obtain posterior samples for qUCB calculation. Falling back to standard UCB on batch mean.")
+            # Fallback: calculate standard UCB for each point and average, or use mean prediction.
+            # This is a rough approximation.
+            mu, sigma, _ = self._get_surrogate_prediction(X_batch_np, return_posterior_samples=False)
+            ucb_values = mu + kappa * sigma
+            return np.mean(ucb_values)
+
+
+        # If multi-target, qUCB needs to be defined for a specific target or a scalarized objective.
+        # Posterior samples from _get_surrogate_prediction are already sliced by self.target_index if they were 3D.
+        # So, posterior_samples here should be (n_posterior_samples, q_points)
+        if posterior_samples.ndim == 3: # Should not happen if _get_surrogate_prediction sliced correctly
+            st.warning("qUCB received 3D posterior samples; expected 2D after target selection. Using target 0.")
+            posterior_samples_target = posterior_samples[:, :, 0]
+        elif posterior_samples.ndim == 2: # Expected: (n_posterior_samples, q_points)
+            posterior_samples_target = posterior_samples
+        else:
+            raise ValueError(f"Unexpected shape for posterior_samples in qUCB: {posterior_samples.shape}")
+
+        # For each posterior sample path, find the maximum value within the batch
+        # max_over_batch_for_each_sample will be shape (n_posterior_samples,)
+        max_over_batch_for_each_sample = np.max(posterior_samples_target, axis=1)
+
+        # The qUCB is the mean of these maximums
+        qUCB_value = np.mean(max_over_batch_for_each_sample)
+
+        # Optionally, one could use kappa * np.std(max_over_batch_for_each_sample) as an exploration term here,
+        # but the standard qUCB (based on fantasizing) is often the expected value of the maximum.
+        # The current implementation is more direct: mean of max values of posterior samples.
+
+        return qUCB_value
 
 
 def bayesian_optimization(train_inputs, train_targets, candidate_inputs, curiosity=0.0, 
@@ -541,45 +729,51 @@ def bayesian_optimization(train_inputs, train_targets, candidate_inputs, curiosi
     return best_sample_idx
 
 
-def multi_objective_bayesian_optimization(train_inputs, train_targets, candidate_inputs, weights,
-                                       max_or_min, curiosity=0.0, acquisition="UCB", n_calls=50, # n_calls not really used for candidate list
-                                       strategy="weighted_sum", surrogate_model=None, input_columns=None):
+def multi_objective_bayesian_optimization(
+    train_inputs: pd.DataFrame | np.ndarray,
+    train_targets: np.ndarray,
+    candidate_inputs: pd.DataFrame | np.ndarray,
+    weights: np.ndarray,
+    max_or_min: list[str],
+    curiosity: float = 0.0,
+    acquisition: str = "UCB",
+    strategy: str = "weighted_sum",
+    surrogate_model = None, # Type hint would be complex: BaseEstimator or similar with specific methods
+    input_columns: list[str] | None = None
+) -> np.ndarray | None:
     """
-    Perform multi-objective Bayesian optimization for materials discovery.
-    Can use a pre-trained surrogate_model or fit individual GPs per objective.
-    
-    Parameters:
-    -----------
-    train_inputs : pd.DataFrame or numpy.ndarray
-        Input features of labeled samples
-    train_targets : numpy.ndarray
-        Target values of labeled samples (multi-objective)
-    candidate_inputs : pd.DataFrame or numpy.ndarray
-        Input features of candidate samples
-    surrogate_model : object, optional
-        A pre-trained surrogate model instance. Must implement
-        `predict_with_uncertainty(X_df, input_columns)` returning (means, std_devs)
-        for all targets. If None, fits individual GPs per objective.
-    input_columns : list[str], optional
-        Required if train_inputs/candidate_inputs are numpy arrays and surrogate_model is provided
-        and needs DataFrame input with column names.
-    weights : numpy.ndarray
-        Importance weights for each objective (used in 'weighted_sum', can influence 'parego' bias for 'parego')
-    max_or_min : list
-        Direction of optimization for each objective ('max' or 'min')
-    curiosity : float
-        Exploration vs exploitation parameter (-2 to +2)
-    acquisition : str
-        Acquisition function type
-    n_calls : int
-        Number of optimization iterations (currently not used as it scores candidates)
-    strategy : str
-        'weighted_sum' for fixed weights, 'parego' for random scalarization.
-        
+    Performs multi-objective Bayesian optimization (MOBO) to score candidate samples.
+
+    This function scalarizes the multi-objective problem using either a fixed
+    'weighted_sum' strategy or 'parego' (randomized scalarization). It then
+    calculates acquisition scores for each candidate. It can use a pre-trained
+    multi-output surrogate model or fit individual Gaussian Processes (GPs)
+    per objective if no surrogate is provided.
+
+    Args:
+        train_inputs: Input features of labeled samples (pd.DataFrame or np.ndarray).
+        train_targets: Target values of labeled samples (np.ndarray, shape (n_samples, n_objectives)).
+        candidate_inputs: Input features of candidate samples to be scored.
+        weights: Importance weights for each objective. Used directly in 'weighted_sum'
+                 and can bias sampling in 'parego'.
+        max_or_min: List of strings ('max' or 'min') indicating optimization
+                    direction for each objective.
+        curiosity: Exploration vs. exploitation parameter (-2 to +2), adjusts acquisition.
+        acquisition: Acquisition function type (e.g., "UCB", "EI", "PI").
+        strategy: MOBO strategy:
+                  - "weighted_sum": Uses fixed `weights` for scalarization.
+                  - "parego": Uses randomly drawn weights (Dirichlet distribution).
+        surrogate_model: Optional pre-trained surrogate model. Must implement
+                         `predict_with_uncertainty(X, input_columns)` returning
+                         (means, std_devs) for all targets. If None, individual
+                         GPs are fitted per objective.
+        input_columns: Required if `train_inputs` or `candidate_inputs` are NumPy
+                       arrays and a `surrogate_model` is provided that expects
+                       DataFrame input with column names.
+
     Returns:
-    --------
-    best_sample_idx : int
-        Index of the best candidate sample
+        A NumPy array of acquisition scores for `candidate_inputs`. Higher scores
+        are better. Returns None or random scores if issues arise (e.g., no valid data).
     """
     # Handle data dimensionality
     train_targets = np.array(train_targets)
