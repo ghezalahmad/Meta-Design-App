@@ -100,9 +100,10 @@ class RFModel:
             input_columns (list[str]): List of input feature column names.
 
         Returns:
-            tuple: (predictions_original_scale, uncertainties)
+            tuple: (predictions_original_scale, uncertainties, Optional[all_tree_preds_original_scale])
                    predictions_original_scale (np.ndarray): Predictions in the original target scale.
-                   uncertainties (np.ndarray): Uncertainty estimates (variance based).
+                   uncertainties (np.ndarray): Uncertainty estimates (std dev based).
+                   all_tree_preds_original_scale (np.ndarray, optional): Predictions from all trees in original scale. Shape (n_estimators, n_samples, n_targets)
         """
         if not self.is_trained or self.scaler_x is None or self.scaler_y is None:
             raise RuntimeError("Model is not trained yet or scalers are missing.")
@@ -142,7 +143,24 @@ class RFModel:
             # We need a single uncertainty value per sample, so average std_dev across targets
             uncertainties = np.mean(std_dev_original_scale, axis=1).reshape(-1, 1) # Return mean std_dev
 
-        return predictions_original_scale, uncertainties # Now returning std_dev
+        # Inverse transform all tree predictions for posterior samples
+        # tree_predictions is (n_estimators, n_samples) or (n_estimators, n_samples, n_targets_rf)
+        all_tree_preds_original_scale_list = []
+        if self.model.n_outputs_ == 1: # tree_predictions is (n_estimators, n_samples)
+            for i in range(tree_predictions.shape[0]): # Iterate over estimators
+                # tree_predictions[i, :] is (n_samples,). Reshape for scaler.
+                tree_pred_orig_scale = self.scaler_y.inverse_transform(tree_predictions[i, :].reshape(-1,1))
+                all_tree_preds_original_scale_list.append(tree_pred_orig_scale)
+        else: # tree_predictions is (n_estimators, n_samples, n_targets_rf)
+             for i in range(tree_predictions.shape[0]): # Iterate over estimators
+                # tree_predictions[i, :, :] is (n_samples, n_targets_rf)
+                tree_pred_orig_scale = self.scaler_y.inverse_transform(tree_predictions[i, :, :])
+                all_tree_preds_original_scale_list.append(tree_pred_orig_scale)
+
+        all_tree_preds_original_scale = np.stack(all_tree_preds_original_scale_list, axis=0)
+        # Final shape: (n_estimators, n_samples, n_actual_targets_after_scaler)
+
+        return predictions_original_scale, uncertainties, all_tree_preds_original_scale
 
 def train_rf_model(data: pd.DataFrame, input_columns: list[str], target_columns: list[str],
                    n_estimators=100, random_state=42, perform_grid_search=False, **kwargs):
@@ -179,7 +197,8 @@ def evaluate_rf_model(
 
     st.info(f"Evaluating RF model with {len(labeled_data)} labeled samples and {len(unlabeled_data)} unlabeled samples.")
 
-    predictions_orig_scale, uncertainties = rf_model.predict_with_uncertainty(unlabeled_data, input_columns)
+    # Unpack all three return values, ignore the third if not used by this function
+    predictions_orig_scale, uncertainties, _ = rf_model.predict_with_uncertainty(unlabeled_data, input_columns)
 
     # Ensure predictions are non-negative, aligning with expected output characteristics.
     predictions_final = np.maximum(predictions_orig_scale, 0)

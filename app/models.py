@@ -11,7 +11,7 @@ import pandas as pd
 import pandas as pd
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import Matern, RBF, WhiteKernel
-from app.utils import calculate_utility, calculate_novelty, compute_acquisition_utility, select_acquisition_function
+from app.utils import calculate_utility, calculate_novelty, select_acquisition_function
 
 class MAMLModel(nn.Module):
     def __init__(self, input_size, output_size, hidden_size=128, num_layers=3, dropout_rate=0.3):
@@ -78,31 +78,49 @@ class MAMLModel(nn.Module):
             dropout_rate (float): Dropout rate to use during MC sampling.
 
         Returns:
-            tuple: (mean_predictions_original_scale, std_dev_original_scale)
+            tuple: (mean_predictions_original_scale, std_dev_original_scale, Optional[mc_samples_original_scale])
                    mean_predictions_original_scale (np.ndarray): Predictions in the original target scale.
                    std_dev_original_scale (np.ndarray): Standard deviation of predictions in original target scale.
+                   mc_samples_original_scale (np.ndarray, optional): MC samples in original target scale. Shape (num_mc_samples, num_input_points, num_targets).
         """
         if not getattr(self, 'is_trained', False) or self.scaler_x is None or self.scaler_y is None:
             raise RuntimeError("Model is not trained yet or scalers are missing. Call meta_train first.")
 
-        self.eval() # Ensure model is in eval mode for consistent dropout behavior if not handled by calculate_uncertainty_ensemble
-
+        # self.eval() # eval mode is set inside calculate_uncertainty_ensemble if needed for dropout
+        # For mean prediction, it should be eval. For MC samples, it's train.
+        # Let's get mean pred first in eval mode.
+        self.eval()
         X_processed = X_df_original_scale[input_columns]
         X_scaled_np = self.scaler_x.transform(X_processed)
         X_tensor = torch.tensor(X_scaled_np, dtype=torch.float32)
 
-        # Get mean predictions (scaled)
         with torch.no_grad():
-            mean_predictions_scaled = self(X_tensor).numpy() # self.forward(X_tensor)
+            mean_predictions_scaled = self(X_tensor).numpy()
 
-        # Get uncertainty (variance, scaled) using existing ensemble/dropout method
+        # Get uncertainty (variance, scaled) AND MC samples using existing ensemble/dropout method
         # calculate_uncertainty_ensemble sets model.train() internally for dropout
-        variance_scaled_per_sample = calculate_uncertainty_ensemble(
-            self, X_tensor, num_samples=num_samples, dropout_rate=dropout_rate
-        ) # This returns per-sample variance (or mean variance if multi-target)
+        variance_scaled_per_sample, mc_samples_scaled_torch = calculate_uncertainty_ensemble(
+            self, X_tensor, num_samples=num_samples, dropout_rate=dropout_rate,
+            use_input_perturbation=getattr(self, 'use_input_perturbation_for_uncertainty', False), # Assuming this attribute could be set
+            noise_scale=getattr(self, 'noise_scale_for_uncertainty', 0.05)
+        ) # variance_scaled_per_sample is (n_points,) or (n_points,1), mc_samples_scaled_torch is (n_mc_samples, n_points, n_targets)
 
         # Inverse transform mean predictions
         mean_predictions_original_scale = self.scaler_y.inverse_transform(mean_predictions_scaled)
+
+        # Inverse transform MC samples
+        # mc_samples_scaled_torch is (num_samples, num_X_points, num_targets)
+        # scaler_y.inverse_transform expects (num_X_points, num_targets)
+        mc_samples_original_scale_list = []
+        if mc_samples_scaled_torch is not None:
+            mc_samples_scaled_np = mc_samples_scaled_torch.cpu().numpy()
+            for i in range(mc_samples_scaled_np.shape[0]): # Iterate over MC samples
+                sample_slice_scaled = mc_samples_scaled_np[i, :, :]
+                mc_samples_original_scale_list.append(self.scaler_y.inverse_transform(sample_slice_scaled))
+            mc_samples_original_scale = np.stack(mc_samples_original_scale_list, axis=0)
+        else:
+            mc_samples_original_scale = None
+
 
         # Inverse transform uncertainty (variance -> std_dev)
         # scaler_y.scale_ is an array of scales for each target feature
@@ -149,13 +167,44 @@ class MAMLModel(nn.Module):
         else:
             std_dev_original_scale_per_sample = std_dev_original_scale.reshape(-1, 1)
 
-        return mean_predictions_original_scale, std_dev_original_scale_per_sample
+    return mean_predictions_original_scale, std_dev_original_scale_per_sample, mc_samples_original_scale
 
 
-def meta_train(meta_model, data, input_columns, target_columns, epochs=100, inner_lr=0.01, 
-               outer_lr=0.001, num_tasks=4, inner_lr_decay=0.95, curiosity=0, 
-               min_samples_per_task=3, early_stopping_patience=10):
+def meta_train(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list[str], target_columns: list[str],
+               epochs: int = 100, inner_lr: float = 0.01, outer_lr: float = 0.001,
+               num_tasks: int = 4, inner_lr_decay: float = 0.95, curiosity: float = 0,
+               min_samples_per_task: int = 3, early_stopping_patience: int = 10) -> tuple[MAMLModel, RobustScaler | None, RobustScaler | None]:
+    """
+    Trains a MAMLModel using meta-learning.
 
+    The function preprocesses data, sets up optimizers and schedulers,
+    and then runs the meta-training loop. Inside the loop, it samples tasks,
+    adapts a copy of the model on the support set of each task, and computes
+    a meta-loss on the query set to update the original meta-model.
+    Includes features like adaptive loss, data tiling for small datasets,
+    episodic memory, and early stopping.
+
+    Args:
+        meta_model: The MAMLModel instance to be trained.
+        data: DataFrame containing all training data.
+        input_columns: List of column names for input features.
+        target_columns: List of column names for target properties.
+        epochs: Number of meta-training epochs.
+        inner_lr: Initial learning rate for the inner loop (task adaptation).
+        outer_lr: Learning rate for the outer loop (meta-model update).
+        num_tasks: Number of tasks to sample per epoch.
+        inner_lr_decay: Decay rate for the inner loop learning rate.
+        curiosity: Factor to adjust loss, potentially encouraging exploration.
+        min_samples_per_task: Minimum samples required to form a task.
+        early_stopping_patience: Number of epochs with no improvement to wait before stopping.
+
+    Returns:
+        A tuple containing:
+            - The trained MAMLModel.
+            - The scaler used for input features (RobustScaler).
+            - The scaler used for target properties (RobustScaler).
+        Returns (meta_model, None, None) if training cannot proceed (e.g., no labeled data).
+    """
     # Configure optimizers with weight decay to prevent overfitting on small datasets
     optimizer = optim.AdamW(meta_model.parameters(), lr=outer_lr, 
                            weight_decay=1e-3, betas=(0.9, 0.999))
@@ -482,13 +531,36 @@ def meta_train(meta_model, data, input_columns, target_columns, epochs=100, inne
     return meta_model, scaler_inputs, scaler_targets
 
 
-# Corrected data tiling and scaling logic in evaluate_maml
+def evaluate_maml(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list[str], target_columns: list[str],
+                  curiosity: float, weights: np.ndarray, max_or_min: list[str],
+                  acquisition: str = None, min_labeled_samples: int = 5, dynamic_acquisition: bool = True) -> pd.DataFrame | None:
+    """
+    Evaluates a trained MAML model on unlabeled data to suggest new candidates.
 
-def evaluate_maml(meta_model, data, input_columns, target_columns, curiosity, weights, 
-                  max_or_min, acquisition=None, min_labeled_samples=5, dynamic_acquisition=True):
+    It handles predictions (with GP fallback for very small labeled sets),
+    uncertainty estimation, novelty calculation, and utility computation using
+    a specified acquisition function.
 
+    Args:
+        meta_model: The trained MAMLModel instance.
+        data: DataFrame containing all data (labeled and unlabeled).
+        input_columns: List of column names for input features.
+        target_columns: List of column names for target properties.
+        curiosity: Float indicating exploration vs. exploitation tendency.
+        weights: Numpy array of weights for each target property in utility calculation.
+        max_or_min: List of strings ('max' or 'min') indicating optimization direction for each target.
+        acquisition: Name of the acquisition function to use (e.g., "UCB", "EI").
+                     If None, selected dynamically based on curiosity and data size.
+        min_labeled_samples: Minimum number of labeled samples required to use MAML directly;
+                             below this, a Gaussian Process fallback is used.
+        dynamic_acquisition: If True and acquisition is None, it's selected dynamically.
+
+    Returns:
+        A pandas DataFrame with suggestions ranked by utility, including predicted properties,
+        uncertainty, novelty, and other metrics. Returns None if no unlabeled data.
+    """
     # Get labeled and unlabeled data
-    unlabeled_data = data[data[target_columns].isna().any(axis=1)]
+    unlabeled_data = data[data[target_columns].isna().any(axis=1)].copy() # Use .copy() to avoid SettingWithCopyWarning
     labeled_data = data.dropna(subset=target_columns)
 
     if unlabeled_data.empty:
@@ -583,13 +655,24 @@ def evaluate_maml(meta_model, data, input_columns, target_columns, curiosity, we
     if max_or_min is None or not isinstance(max_or_min, list):
         max_or_min = ['max'] * len(target_columns)
 
-    utility_scores = compute_acquisition_utility(predictions if not use_fallback else all_predictions,
-                                                 uncertainty_scores, novelty_scores, curiosity,
-                                                 weights, max_or_min, acquisition)
-    utility_scores = np.log1p(utility_scores)
+    # Using the consolidated calculate_utility from app.utils
+    # thresholds parameter can be passed as None if not used here.
+    # for_visualization is False as these are final utility scores for ranking.
+    utility_scores = calculate_utility(
+        predictions=(predictions if not use_fallback else all_predictions),
+        uncertainties=uncertainty_scores,
+        novelty=novelty_scores,
+        curiosity=curiosity,
+        weights=weights,
+        max_or_min=max_or_min,
+        thresholds=None,  # Or pass actual thresholds if they become available here
+        acquisition=acquisition,
+        for_visualization=False
+    )
+    # The calculate_utility function already applies log1p and clipping internally.
 
     result_df["Utility"] = utility_scores.flatten()
-    result_df["Uncertainty"] = np.clip(uncertainty_scores, 1e-6, None).flatten()
+    result_df["Uncertainty"] = np.clip(uncertainty_scores.flatten(), 1e-6, None) # Ensure uncertainty_scores is flattened
     result_df["Novelty"] = novelty_scores.flatten()
     result_df["Exploration"] = result_df["Uncertainty"] * result_df["Novelty"]
     result_df["Exploitation"] = 1.0 - result_df["Uncertainty"]
@@ -609,25 +692,35 @@ def evaluate_maml(meta_model, data, input_columns, target_columns, curiosity, we
     return result_df
 
 
-def calculate_uncertainty_ensemble(model, X, num_samples=30, dropout_rate=0.3):
+def calculate_uncertainty_ensemble(model: nn.Module, X: torch.Tensor, num_samples: int = 30,
+                                   dropout_rate: float = 0.3, use_input_perturbation: bool = False,
+                                   noise_scale: float = 0.05) -> tuple[np.ndarray, torch.Tensor]:
     """
-    Enhanced uncertainty estimation combining Monte Carlo dropout with model ensembling.
-    
-    Parameters:
-    -----------
-    model : nn.Module
-        The model with dropout layers
-    X : torch.Tensor
-        Input data
-    num_samples : int
-        Number of Monte Carlo samples
-    dropout_rate : float
-        Dropout rate to use (if model has configurable dropout)
-        
+    Estimates prediction uncertainty using Monte Carlo (MC) dropout and optional input perturbation.
+
+    The method involves performing multiple forward passes with dropout layers enabled
+    (and optionally with noise added to inputs). The variance of these predictions
+    is used as a measure of uncertainty. A small term proportional to the prediction
+    magnitude is added to this variance.
+
+    Args:
+        model: The PyTorch nn.Module for which to estimate uncertainty.
+               Dropout layers should be part of this model.
+        X: Input data as a PyTorch Tensor.
+        num_samples: The number of forward passes (MC samples) to perform.
+        dropout_rate: The dropout rate to apply. This function attempts to set
+                      the `p` attribute of `nn.Dropout` layers in the model.
+        use_input_perturbation: If True, Gaussian noise is added to the inputs
+                                for each MC sample.
+        noise_scale: Standard deviation of the Gaussian noise for input perturbation.
+
     Returns:
-    --------
-    uncertainty : numpy.ndarray
-        Estimated uncertainty for each prediction
+        A tuple containing:
+            - uncertainty_np (np.ndarray): An array of uncertainty scores (one per input point).
+                                           If the model is multi-target, this is the mean
+                                           uncertainty across targets.
+            - predictions_stack (torch.Tensor): The stack of raw predictions from all MC samples.
+                                                Shape: (num_samples, num_input_points, num_targets).
     """
     # Set model to training mode to enable dropout
     model.train()
@@ -641,7 +734,13 @@ def calculate_uncertainty_ensemble(model, X, num_samples=30, dropout_rate=0.3):
     predictions = []
     for _ in range(num_samples):
         with torch.no_grad():
-            pred = model(X)
+            if use_input_perturbation:
+                # Add Gaussian noise to inputs
+                noise = torch.normal(0, noise_scale, size=X.shape, device=X.device) # Ensure noise is on same device
+                perturbed_input = X + noise
+                pred = model(perturbed_input)
+            else:
+                pred = model(X)
             predictions.append(pred)
     
     # Stack predictions and compute statistics
@@ -657,114 +756,17 @@ def calculate_uncertainty_ensemble(model, X, num_samples=30, dropout_rate=0.3):
     
     # If we have multi-target predictions, average the uncertainties across targets
     if uncertainty_np.ndim > 1 and uncertainty_np.shape[1] > 1:
-        uncertainty_np = np.mean(uncertainty_np, axis=1)
+        uncertainty_np = np.mean(uncertainty_np, axis=1) # This is for the aggregated uncertainty output
     
-    return uncertainty_np
+    # Ensure uncertainty is non-negative
+    uncertainty_np = np.maximum(uncertainty_np, 1e-9) # Adding a clip for safety
 
+    # predictions_stack is (num_samples, num_X_points, num_targets)
+    # For q-acquisition functions, we might need the raw samples.
+    # The function's primary return is still the single uncertainty array.
+    # We can return the stack as an optional second value if needed by a wrapper.
+    # For now, let's modify predict_with_uncertainty to handle this.
+    return uncertainty_np, predictions_stack # Return stack for potential use
 
-def calculate_utility_with_acquisition(predictions, uncertainties, novelty, curiosity, weights, max_or_min, acquisition="UCB"):
-    """
-    Utility calculation for materials discovery with acquisition functions.
-    """
-    # Ensure input types and shapes
-    predictions = np.array(predictions)
-    uncertainties = np.array(uncertainties)
-    novelty = np.array(novelty).flatten()
-    weights = np.array(weights).reshape(1, -1)
-    
-    # Handle dimension mismatch - make sure uncertainties is the right shape
-    if uncertainties.ndim > 1 and uncertainties.shape[0] == predictions.shape[0]:
-        # If we have per-target uncertainties, average them
-        uncertainties = np.mean(uncertainties, axis=1)
-    
-    # Flatten uncertainties to ensure consistent shape
-    uncertainties = uncertainties.flatten()
-    
-    # Make sure the length matches predictions
-    if len(uncertainties) != len(predictions):
-        # If shapes don't match, broadcast or truncate
-        if len(uncertainties) > len(predictions):
-            # Too many uncertainties, truncate
-            uncertainties = uncertainties[:len(predictions)]
-        else:
-            # Too few uncertainties, broadcast by repeating
-            repeats = int(np.ceil(len(predictions) / len(uncertainties)))
-            uncertainties = np.tile(uncertainties, repeats)[:len(predictions)]
-    
-    # Define minimum acceptable threshold.
-    # Predictions below this threshold will have their utility scores heavily penalized.
-    min_strength_threshold = 10  
-    
-    # Create a mask for rows that have any value below threshold, based on original predictions.
-    invalid_rows_for_penalty = np.any(predictions < min_strength_threshold, axis=1)
-    
-    # Predictions used for the positive part of utility calculation remain as passed
-    # (they are already >= 0 from the model evaluation stage).
-    # Utility is calculated based on the model's actual (non-negative) predictions.
-    # The penalty for being < min_strength_threshold is applied later to the final utility score.
-    
-    # Normalize predictions to [0, 1] range
-    min_vals = np.min(predictions, axis=0, keepdims=True)
-    max_vals = np.max(predictions, axis=0, keepdims=True)
-    range_vals = max_vals - min_vals
-    range_vals = np.where(range_vals < 1e-10, 1.0, range_vals)  # Avoid division by zero
-    
-    norm_predictions = (predictions - min_vals) / range_vals
-    
-    # Apply max/min direction to normalize predictions
-    for i, direction in enumerate(max_or_min):
-        if direction == "min":
-            norm_predictions[:, i] = 1.0 - norm_predictions[:, i]
-    
-    # Apply weights to the normalized predictions
-    weighted_predictions = norm_predictions * weights
-    
-    # Normalize uncertainties to [0, 1] range
-    norm_uncertainties = np.zeros_like(uncertainties) if uncertainties.size == 0 else uncertainties / (np.max(uncertainties) + 1e-10)
-    
-    # Normalize novelty to [0, 1] range
-    norm_novelty = np.zeros_like(novelty) if novelty.size == 0 else novelty / (np.max(novelty) + 1e-10)
-    
-    # Exploration-exploitation trade-off scaling
-    curiosity_factor = np.clip(1.0 + 0.5 * curiosity, 0.1, 2.0)
-    
-    # Compute utility based on acquisition function
-    if acquisition == "UCB":
-        utility = weighted_predictions.sum(axis=1, keepdims=True) + curiosity_factor * norm_uncertainties.reshape(-1, 1)
-        # Apply penalty to invalid rows (if any)
-    if np.any(invalid_rows_for_penalty):
-        utility[invalid_rows_for_penalty] = -np.inf
-
-    elif acquisition == "EI":
-        best_pred = np.max(weighted_predictions.sum(axis=1))
-        improvement = np.maximum(0, weighted_predictions.sum(axis=1, keepdims=True) - best_pred)
-        z = improvement / (norm_uncertainties.reshape(-1, 1) + 1e-10)
-        cdf = 0.5 * (1 + np.tanh(z / np.sqrt(2)))
-        pdf = np.exp(-0.5 * z**2) / np.sqrt(2 * np.pi)
-        utility = improvement * cdf + norm_uncertainties.reshape(-1, 1) * pdf * curiosity_factor
-        if np.any(invalid_rows_for_penalty):
-            utility[invalid_rows_for_penalty] = -np.inf
-
-    elif acquisition == "PI":
-        best_pred = np.max(weighted_predictions.sum(axis=1))
-        z = (weighted_predictions.sum(axis=1, keepdims=True) - best_pred) / (norm_uncertainties.reshape(-1, 1) + 1e-10)
-        utility = 0.5 * (1 + np.tanh(z / np.sqrt(2)))
-        if np.any(invalid_rows_for_penalty):
-            utility[invalid_rows_for_penalty] = -np.inf
-
-    elif acquisition == "MaxEntropy":
-        utility = norm_uncertainties.reshape(-1, 1) + 0.5 * norm_novelty.reshape(-1, 1) * curiosity_factor
-        if np.any(invalid_rows_for_penalty):
-            utility[invalid_rows_for_penalty] = -np.inf
-
-    else: # Default or UCB
-        utility = weighted_predictions.sum(axis=1, keepdims=True) + curiosity_factor * norm_uncertainties.reshape(-1, 1)
-        if np.any(invalid_rows_for_penalty):
-            utility[invalid_rows_for_penalty] = -np.inf
-    
-    # Sort based on utility (descending)
-    sorted_indices = np.argsort(-utility.flatten())  # Sort in descending order
-    utility = utility[sorted_indices]
-    
-    # Apply logarithmic scaling to smooth the utility landscape
-    return np.clip(utility, 1e-10, None)
+# Note: The following function `calculate_utility_with_acquisition` was removed as part of consolidation.
+# The primary utility calculation is now done by `app.utils.calculate_utility`.

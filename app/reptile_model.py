@@ -6,9 +6,10 @@ import pandas as pd
 from sklearn.preprocessing import RobustScaler
 import streamlit as st
 from app.utils import (
-    calculate_utility, calculate_novelty, calculate_uncertainty,
+    calculate_utility, calculate_novelty, # calculate_uncertainty removed
     initialize_scheduler, balance_exploration_exploitation
 )
+# calculate_uncertainty_ensemble will be imported from app.models where needed
 
 class ReptileModel(nn.Module):
     def __init__(self, input_size, output_size, hidden_size=256, num_layers=3, dropout_rate=0.3):
@@ -78,37 +79,43 @@ class ReptileModel(nn.Module):
             dropout_rate (float): Dropout rate to use during MC sampling for uncertainty.
 
         Returns:
-            tuple: (mean_predictions_original_scale, std_dev_original_scale_per_sample)
+            tuple: (mean_predictions_original_scale, std_dev_original_scale_per_sample, Optional[mc_samples_original_scale])
                    mean_predictions_original_scale (np.ndarray): Predictions in the original target scale.
                    std_dev_original_scale_per_sample (np.ndarray): Standard deviation of predictions (per sample) in original target scale.
+                   mc_samples_original_scale (np.ndarray, optional): MC samples in original target scale.
         """
         if not getattr(self, 'is_trained', False) or self.scaler_x is None or self.scaler_y is None:
             raise RuntimeError("Model is not trained yet or scalers are missing. Call reptile_train first.")
 
         self.eval() # Ensure model is in eval mode for mean prediction
-
         X_processed = X_df_original_scale[input_columns]
         X_scaled_np = self.scaler_x.transform(X_processed)
         X_tensor = torch.tensor(X_scaled_np, dtype=torch.float32)
 
-        # Get mean predictions (scaled)
         with torch.no_grad():
-            mean_predictions_scaled = self(X_tensor).numpy() # self.forward(X_tensor)
+            mean_predictions_scaled = self(X_tensor).numpy()
 
-        # Inverse transform mean predictions
         mean_predictions_original_scale = self.scaler_y.inverse_transform(mean_predictions_scaled)
 
-        # Get uncertainty (variance-like, scaled) using app.utils.calculate_uncertainty
-        # This function handles setting model.train() for dropout etc.
-        from app.utils import calculate_uncertainty as util_calc_uncertainty # alias to avoid conflict
+        from app.models import calculate_uncertainty_ensemble
+        variance_scaled_per_sample, mc_samples_scaled_torch = calculate_uncertainty_ensemble(
+            model=self, X=X_tensor,
+            num_samples=num_perturbations,
+            dropout_rate=dropout_rate,
+            use_input_perturbation=True, # Reptile model was using this
+            noise_scale=noise_scale
+        )
+        if variance_scaled_per_sample.ndim == 1:
+            variance_scaled_per_sample = variance_scaled_per_sample.reshape(-1, 1)
 
-        # calculate_uncertainty returns a per-sample variance-like value (already averaged if multi-target)
-        variance_scaled_per_sample = util_calc_uncertainty(
-            self, X_tensor,
-            num_perturbations=num_perturbations,
-            noise_scale=noise_scale,
-            dropout_rate=dropout_rate
-        ) # Shape (n_samples, 1)
+        mc_samples_original_scale = None
+        if mc_samples_scaled_torch is not None:
+            mc_samples_scaled_np = mc_samples_scaled_torch.cpu().numpy()
+            mc_samples_original_scale_list = []
+            for i in range(mc_samples_scaled_np.shape[0]):
+                sample_slice_scaled = mc_samples_scaled_np[i, :, :]
+                mc_samples_original_scale_list.append(self.scaler_y.inverse_transform(sample_slice_scaled))
+            mc_samples_original_scale = np.stack(mc_samples_original_scale_list, axis=0)
 
         # Inverse transform uncertainty (variance -> std_dev)
         # scaler_y.scale_ is an array of scales for each target feature
@@ -129,7 +136,7 @@ class ReptileModel(nn.Module):
 
         std_dev_original_scale_per_sample = np.sqrt(np.maximum(variance_original_scale, 1e-12)) # ensure non-negative before sqrt
 
-        return mean_predictions_original_scale, std_dev_original_scale_per_sample.reshape(-1, 1)
+        return mean_predictions_original_scale, std_dev_original_scale_per_sample.reshape(-1, 1), mc_samples_original_scale
     
 def reptile_train(model, data, input_columns, target_columns, epochs, learning_rate, num_tasks, **kwargs):
     
@@ -182,10 +189,17 @@ def reptile_train(model, data, input_columns, target_columns, epochs, learning_r
     patience = 20
     patience_counter = 0
     
+    # Progress bar for training
+    progress_bar = st.progress(0)
+    st.info(f"Starting Reptile training for {epochs} epochs...")
+
     for epoch in range(epochs):
         model.train()
         epoch_loss = 0.0
         
+        # Update progress bar
+        progress_bar.progress((epoch + 1) / epochs)
+
         # Partition data into tasks
         task_size = len(train_inputs) // num_tasks
         tasks = [(i * task_size, min((i + 1) * task_size, len(train_inputs))) for i in range(num_tasks)]
@@ -290,14 +304,19 @@ def evaluate_reptile(model, data, input_columns, target_columns, curiosity, weig
     with torch.no_grad():
         predictions_scaled = model(inputs_infer_tensor).numpy()
     
-    # Calculate uncertainty using Monte Carlo dropout
-    model.train()  # Enable dropout for uncertainty estimation
-    uncertainty_scores = calculate_uncertainty(
-        model, 
-        inputs_infer_tensor, 
-        num_perturbations=50,  # More samples for better estimation
-        noise_scale=0.05       # Small noise to avoid extreme perturbations
+    # Calculate uncertainty using Monte Carlo dropout from app.models
+    from app.models import calculate_uncertainty_ensemble
+    # model.train() is handled by calculate_uncertainty_ensemble
+    uncertainty_scores = calculate_uncertainty_ensemble(
+        model=model,
+        X=inputs_infer_tensor,
+        num_samples=50,  # Corresponds to num_perturbations
+        dropout_rate=0.3, # Default dropout rate, can be parameterized if needed
+        use_input_perturbation=True, # Reptile's old uncertainty used input perturbation
+        noise_scale=0.05
     )
+    if uncertainty_scores.ndim == 1: # Ensure shape (n_samples, 1)
+        uncertainty_scores = uncertainty_scores.reshape(-1, 1)
     
     # Inverse transform predictions to original scale
     predictions = scaler_targets.inverse_transform(predictions_scaled)

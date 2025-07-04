@@ -21,11 +21,38 @@ def set_seed(seed):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-# Comprehensive utility calculation with multiple acquisition functions
-def calculate_utility(predictions, uncertainties, novelty, curiosity, weights, max_or_min, 
-                      thresholds=None, acquisition="UCB", for_visualization=False):
+def calculate_utility(predictions: np.ndarray, uncertainties: np.ndarray | None, novelty: np.ndarray | None,
+                      curiosity: float, weights: np.ndarray, max_or_min: list[str],
+                      thresholds: list[float | None] | None = None,
+                      acquisition: str = "UCB", for_visualization: bool = False) -> np.ndarray:
+    """
+    Calculates utility scores for candidate samples based on their predicted properties,
+    uncertainties, novelty, and a specified acquisition function.
+
+    This is the primary utility calculation function used across different models.
+
+    Args:
+        predictions: Numpy array of predicted target values. Shape (n_samples, n_targets).
+        uncertainties: Numpy array of uncertainty estimates for predictions.
+                       Shape (n_samples, 1) or (n_samples,). Can be None.
+        novelty: Numpy array of novelty scores. Shape (n_samples, 1) or (n_samples,). Can be None.
+        curiosity: Factor (-2 to +2) to balance exploration vs. exploitation.
+                   Higher values increase exploration.
+        weights: Numpy array of weights for each target property. Shape (n_targets,).
+        max_or_min: List of strings ('max' or 'min') indicating optimization
+                    direction for each target.
+        thresholds: Optional list of threshold values for each target. Samples not
+                    meeting these are penalized. E.g. [10.0, None, <5.0].
+        acquisition: Name of the acquisition function ("UCB", "EI", "PI", "MaxEntropy").
+        for_visualization: If True, returns raw utility scores suitable for direct plotting.
+                           If False, applies a log1p transformation for ranking.
+
+    Returns:
+        Numpy array of utility scores. Shape (n_samples,).
+    """
     valid_acquisitions = ["UCB", "PI", "MaxEntropy", "EI"]
     if acquisition not in valid_acquisitions:
+        st.warning(f"Invalid acquisition function '{acquisition}'. Defaulting to 'UCB'.")
         acquisition = "UCB"
     
     predictions = np.array(predictions)
@@ -59,79 +86,113 @@ def calculate_utility(predictions, uncertainties, novelty, curiosity, weights, m
         if direction == "min":
             norm_predictions[:, i] = 1.0 - norm_predictions[:, i]
 
-    weighted_predictions = weights * norm_predictions
+    # Ensure weights is 1D array for matmul if it's (1, n_obj)
+    if weights.ndim > 1:
+        weights = weights.flatten()
+
+    # Weighted sum of normalized predictions for the exploitation part of utility
+    # norm_predictions is (n_samples, n_objectives), weights is (n_objectives,)
+    # exploitation_term is (n_samples,)
+    exploitation_term = norm_predictions @ weights
 
     # Apply thresholds (optional)
     if thresholds is not None:
-        thresholds = np.array([t if t is not None else -np.inf for t in thresholds])
-        mask = np.ones_like(predictions, dtype=bool)
-        for i, (threshold, direction) in enumerate(zip(thresholds, max_or_min)):
-            if not np.isnan(threshold):
+        thresholds_arr = np.array([t if t is not None else (-np.inf if m == 'max' else np.inf) for t, m in zip(thresholds, max_or_min)])
+        penalty = np.ones(predictions.shape[0])
+        for i, direction in enumerate(max_or_min):
+            if not np.isnan(thresholds_arr[i]):
                 if direction == "max":
-                    mask[:, i] = predictions[:, i] >= threshold
-                else:
-                    mask[:, i] = predictions[:, i] <= threshold
-        threshold_factor = np.mean(mask.astype(float), axis=1, keepdims=True)
-        weighted_predictions = weighted_predictions * threshold_factor
+                    penalty *= (predictions[:, i] >= thresholds_arr[i])
+                else: # min
+                    penalty *= (predictions[:, i] <= thresholds_arr[i])
+        # Apply penalty: full exploitation_term if all thresholds met, 0 otherwise (or could be a factor)
+        # For simplicity, making it a hard penalty. Could be softened.
+        exploitation_term = exploitation_term * penalty
 
-    norm_uncertainties = uncertainties / (np.max(uncertainties) + 1e-10)
-    norm_novelty = novelty / (np.max(novelty) + 1e-10)
 
-    curiosity_factor = np.clip(1.0 + 0.5 * curiosity, 0.1, 2.0)
+    norm_uncertainties = (uncertainties / (np.max(uncertainties) + 1e-10)).flatten()
+    norm_novelty = (novelty / (np.max(novelty) + 1e-10)).flatten()
+
+    curiosity_factor = np.clip(1.0 + 0.5 * curiosity, 0.1, 2.0) # General factor for exploration strength
+
+    # Specific scaling for UCB's kappa, EI's exploration part, etc.
+    # These are typical values, can be tuned or made parameters
+    kappa_ucb = 0.5
+    exploration_bonus_novelty = 0.1
+    exploration_bonus_uncertainty = 0.2
 
     if acquisition == "UCB":
-        kappa = 0.5 * curiosity_factor
-        utility = weighted_predictions.sum(axis=1, keepdims=True) + kappa * norm_uncertainties
-        if curiosity > 0:
-            utility += 0.2 * curiosity * norm_novelty
+        utility = exploitation_term + kappa_ucb * curiosity_factor * norm_uncertainties
+        if curiosity > 0: # Add novelty bonus if exploring
+            utility += exploration_bonus_novelty * curiosity_factor * norm_novelty
 
     elif acquisition == "EI":
-        mean_pred = weighted_predictions.sum(axis=1, keepdims=True)
-        best_pred = np.max(mean_pred)
-        improvement = np.maximum(0, mean_pred - best_pred)
-        sigma = norm_uncertainties + 1e-10
-        z = improvement / sigma
-        ei = improvement * norm.cdf(z) + sigma * norm.pdf(z)
-        utility = ei * (1.0 + 0.2 * curiosity) + 0.1 * curiosity * norm_novelty
+        # Ensure exploitation_term is (n_samples,) for EI/PI logic
+        best_observed_exploitation = np.max(exploitation_term) if len(exploitation_term) > 0 else 0.0
+
+        improvement = np.maximum(0, exploitation_term - best_observed_exploitation)
+        sigma_eff = norm_uncertainties + 1e-10 # Effective sigma for EI/PI
+
+        z = improvement / sigma_eff
+        ei_base = improvement * norm.cdf(z) + sigma_eff * norm.pdf(z)
+
+        # Add curiosity-scaled exploration terms
+        utility = ei_base
+        if curiosity > 0:
+            utility = ei_base * (1 + exploration_bonus_uncertainty * curiosity) + exploration_bonus_novelty * curiosity * norm_novelty
+        else: # If not curious, EI focuses on exploitation based on current model
+            utility = ei_base
+
 
     elif acquisition == "PI":
-        mean_pred = weighted_predictions.sum(axis=1, keepdims=True)
-        best_pred = np.max(mean_pred)
-        sigma = norm_uncertainties + 1e-10
-        z = (mean_pred - best_pred) / sigma
-        pi = norm.cdf(z)
-        utility = pi * (1.0 + 0.1 * curiosity) + 0.2 * curiosity * norm_novelty
+        best_observed_exploitation = np.max(exploitation_term) if len(exploitation_term) > 0 else 0.0
+        sigma_eff = norm_uncertainties + 1e-10 # Effective sigma for EI/PI
+
+        z = (exploitation_term - best_observed_exploitation) / sigma_eff
+        pi_base = norm.cdf(z)
+
+        utility = pi_base
+        if curiosity > 0:
+             utility = pi_base * (1 + exploration_bonus_uncertainty * curiosity) + exploration_bonus_novelty * curiosity * norm_novelty
+        else:
+             utility = pi_base
 
     elif acquisition == "MaxEntropy":
-        utility = norm_uncertainties + 0.5 * norm_novelty * (1.0 + curiosity)
-        utility += 0.1 * weighted_predictions.sum(axis=1, keepdims=True)
+        # MaxEntropy focuses on exploration (uncertainty and novelty)
+        # Small weight to exploitation_term if curiosity allows some exploitation
+        exploitation_weight_max_entropy = 0.1 if curiosity < 0.5 else 0.0 # Only consider exploitation if not strongly exploring
+        utility = (exploration_bonus_uncertainty * norm_uncertainties + exploration_bonus_novelty * norm_novelty) * curiosity_factor \
+                  + exploitation_weight_max_entropy * exploitation_term
+    else: # Fallback, should not happen due to check at the beginning
+        utility = exploitation_term
 
-    utility = np.clip(utility, 1e-10, None)
+    # Ensure utility is a 1D array
+    utility = utility.flatten()
 
-    # ✅ KEY DIFFERENCE FOR PLOT VS RANKING
     if for_visualization:
-        return utility
+        return np.clip(utility, 0, None) # Clip at 0 for visualization if utility can be negative
     else:
-        return np.log1p(utility * 100)
+        # Clip to ensure positive values before log1p, then apply log transform
+        return np.log1p(np.clip(utility, 1e-8, None))
 
 
-
-# Novelty calculation using distance from known samples
-def calculate_novelty(features, labeled_features):
+def calculate_novelty(features: np.ndarray, labeled_features: np.ndarray | None) -> np.ndarray:
     """
-    Calculate novelty scores as the minimum distance to labeled samples.
-    
-    Parameters:
-    -----------
-    features : numpy.ndarray
-        Features of unlabeled candidates
-    labeled_features : numpy.ndarray
-        Features of existing labeled samples
-        
+    Calculates novelty scores for a set of feature vectors based on their
+    minimum Euclidean distance to a set of labeled feature vectors.
+
+    Novelty is normalized by the maximum observed minimum distance. Higher values
+    indicate greater novelty (further from known samples).
+
+    Args:
+        features: Numpy array of feature vectors for which to calculate novelty.
+                  Shape (n_unlabeled_samples, n_features).
+        labeled_features: Numpy array of feature vectors of already known/labeled samples.
+                          Shape (n_labeled_samples, n_features). Can be None or empty.
+
     Returns:
-    --------
-    novelty : numpy.ndarray
-        Novelty scores for each unlabeled candidate
+        A numpy array of novelty scores (between 0 and 1), one for each sample
+        in `features`. Returns an array of ones if `labeled_features` is empty or None.
     """
     # Handle case where no labeled features exist
     if labeled_features is None or labeled_features.shape[0] == 0:
@@ -155,69 +216,6 @@ def calculate_novelty(features, labeled_features):
         novelty = np.ones_like(min_distances)
     
     return novelty
-
-
-# Enhanced uncertainty estimation with Monte Carlo sampling
-def calculate_uncertainty(model, inputs, num_perturbations=50, noise_scale=0.1, dropout_rate=0.3):
-    """
-    Calculate prediction uncertainty using Monte Carlo dropout and input perturbation.
-    
-    Parameters:
-    -----------
-    model : torch.nn.Module
-        Neural network model
-    inputs : torch.Tensor
-        Input tensor
-    num_perturbations : int
-        Number of Monte Carlo samples
-    noise_scale : float
-        Scale of Gaussian noise for input perturbation
-    dropout_rate : float
-        Dropout probability
-        
-    Returns:
-    --------
-    uncertainty : numpy.ndarray
-        Uncertainty scores
-    """
-    model.train()  # Set model to training mode to enable dropout
-    
-    # Update dropout rate if needed
-    for module in model.modules():
-        if isinstance(module, torch.nn.Dropout):
-            module.p = dropout_rate
-    
-    # Store predictions from multiple forward passes
-    perturbations = []
-    
-    # Perform MC dropout with input perturbation
-    for _ in range(num_perturbations):
-        # Add Gaussian noise to inputs
-        noise = torch.normal(0, noise_scale, size=inputs.shape)
-        perturbed_input = inputs + noise
-        
-        with torch.no_grad():
-            pred = model(perturbed_input)
-            perturbations.append(pred)
-    
-    # Stack predictions and compute statistics
-    perturbations = torch.stack(perturbations)
-    
-    # Calculate variance across MC samples
-    variance = torch.var(perturbations, dim=0)
-    
-    # Calculate mean prediction
-    mean_pred = torch.mean(perturbations, dim=0)
-    
-    # Total uncertainty: variance + small factor proportional to prediction magnitude
-    # This combines epistemic (model) and aleatoric (data) uncertainty
-    total_uncertainty = variance + torch.abs(mean_pred) * 0.05
-    
-    # Average uncertainty across output dimensions
-    uncertainty = total_uncertainty.mean(dim=1, keepdim=True)
-    
-    # Apply minimum threshold and return
-    return np.clip(uncertainty.numpy(), 1e-6, None)
 
 
 # Learning Rate Scheduler Configuration
@@ -429,21 +427,23 @@ def generate_diverse_batch(utility_scores, features, batch_size=5, diversity_wei
 
 
 # Pareto front identification
-def identify_pareto_front(predictions, max_or_min):
+def identify_pareto_front(predictions: np.ndarray, max_or_min: list[str]) -> np.ndarray:
     """
-    Identify the Pareto front of non-dominated solutions.
-    
-    Parameters:
-    -----------
-    predictions : numpy.ndarray
-        Predictions for multiple objectives
-    max_or_min : list
-        Direction of optimization for each objective
-        
+    Identifies the Pareto front from a set of multi-objective predictions.
+
+    A solution is on the Pareto front if it is not dominated by any other solution.
+    A solution `A` dominates solution `B` if `A` is no worse than `B` in all
+    objectives and strictly better in at least one objective.
+
+    Args:
+        predictions: A numpy array where rows are samples and columns are
+                     objective values. Shape (n_samples, n_objectives).
+        max_or_min: A list of strings, one for each objective, indicating
+                    whether to 'max' (maximize) or 'min' (minimize) that objective.
+
     Returns:
-    --------
-    pareto_indices : numpy.ndarray
-        Indices of samples on the Pareto front
+        A numpy array containing the indices of the samples that are on
+        the Pareto front.
     """
     n_samples = predictions.shape[0]
     n_objectives = predictions.shape[1]
@@ -478,21 +478,27 @@ def identify_pareto_front(predictions, max_or_min):
     # Return indices of non-dominated solutions
     return np.where(~is_dominated)[0]
 
-def select_acquisition_function(curiosity, num_labeled_samples):
-    """
-    Dynamically select acquisition function based on SLAMD-style strategy.
 
-    Parameters:
-    -----------
-    curiosity : float
-        User-defined exploration-exploitation balance (-2 to +2).
-    num_labeled_samples : int
-        Number of labeled samples available.
+def select_acquisition_function(curiosity: float, num_labeled_samples: int) -> str:
+    """
+    Dynamically selects an acquisition function based on the curiosity level
+    and the number of available labeled samples.
+
+    This implements a SLAMD-style strategy:
+    - With few labeled samples (<10):
+        - High curiosity (> 0.5) favors MaxEntropy (strong exploration).
+        - Low curiosity (< -0.5) favors EI (strong exploitation).
+        - Otherwise, UCB (balanced).
+    - With more labeled samples (>=10):
+        - PI is chosen if curiosity is high (> 1.0).
+        - Otherwise, UCB.
+
+    Args:
+        curiosity: User-defined exploration-exploitation balance (-2 to +2).
+        num_labeled_samples: Number of labeled samples available.
 
     Returns:
-    --------
-    acquisition : str
-        Selected acquisition function name.
+        The name of the selected acquisition function (e.g., "UCB", "EI", "PI", "MaxEntropy").
     """
     if num_labeled_samples < 10:
         if curiosity > 0.5:
@@ -503,56 +509,4 @@ def select_acquisition_function(curiosity, num_labeled_samples):
             return "UCB"         # Balanced
     else:
         return "PI" if curiosity > 1.0 else "UCB"
-
-
-import numpy as np
-from scipy.stats import norm
-
-def compute_acquisition_utility(predictions, uncertainties, novelty, curiosity, weights, max_or_min, acquisition):
-    """
-    Compute utility scores based on selected acquisition function.
-    """
-    # Ensure proper array shapes
-    predictions = np.array(predictions)
-    uncertainties = np.array(uncertainties).reshape(-1)
-    novelty = np.array(novelty).reshape(-1)
-    weights = np.array(weights).reshape(-1)
-
-    # Normalize predictions [0,1] with max/min direction
-    min_vals = predictions.min(axis=0, keepdims=True)
-    max_vals = predictions.max(axis=0, keepdims=True)
-    norm_preds = (predictions - min_vals) / (max_vals - min_vals + 1e-10)
-
-    for i, direction in enumerate(max_or_min):
-        if direction == "min":
-            norm_preds[:, i] = 1.0 - norm_preds[:, i]
-
-    # Weighted predictions: shape [n_samples]
-    weighted_preds = norm_preds @ weights  # no reshape needed
-    weighted_preds = weighted_preds.flatten()
-
-    # Normalize uncertainties/novelty
-    norm_uncertainty = uncertainties / (uncertainties.max() + 1e-10)
-    norm_novelty = novelty / (novelty.max() + 1e-10)
-
-    curiosity_factor = np.clip(1.0 + 0.5 * curiosity, 0.1, 2.0)
-
-    if acquisition == "UCB":
-        utility = weighted_preds + curiosity_factor * norm_uncertainty
-    elif acquisition == "EI":
-        best = weighted_preds.max()
-        improvement = np.maximum(0, weighted_preds - best)
-        z = improvement / (norm_uncertainty + 1e-10)
-        ei = improvement * norm.cdf(z) + norm_uncertainty * norm.pdf(z) * curiosity_factor
-        utility = ei
-    elif acquisition == "PI":
-        best = weighted_preds.max()
-        z = (weighted_preds - best) / (norm_uncertainty + 1e-10)
-        utility = norm.cdf(z)
-    elif acquisition == "MaxEntropy":
-        utility = norm_uncertainty + 0.5 * norm_novelty * curiosity_factor
-    else:
-        utility = weighted_preds
-
-    return np.log1p(np.clip(utility, 1e-8, None))  # final shape [n_samples]
 
