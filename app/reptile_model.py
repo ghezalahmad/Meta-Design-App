@@ -307,7 +307,8 @@ def evaluate_reptile(model, data, input_columns, target_columns, curiosity, weig
     # Calculate uncertainty using Monte Carlo dropout from app.models
     from app.models import calculate_uncertainty_ensemble
     # model.train() is handled by calculate_uncertainty_ensemble
-    uncertainty_scores = calculate_uncertainty_ensemble(
+    # calculate_uncertainty_ensemble returns a tuple (uncertainty_np, predictions_stack)
+    uncertainty_scores, _ = calculate_uncertainty_ensemble(
         model=model,
         X=inputs_infer_tensor,
         num_samples=50,  # Corresponds to num_perturbations
