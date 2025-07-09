@@ -166,8 +166,8 @@ class MAMLModel(nn.Module):
             std_dev_original_scale_per_sample = np.mean(std_dev_original_scale, axis=1).reshape(-1, 1)
         else:
             std_dev_original_scale_per_sample = std_dev_original_scale.reshape(-1, 1)
-
-    return mean_predictions_original_scale, std_dev_original_scale_per_sample, mc_samples_original_scale
+        # Ensuring this return statement is clean
+        return mean_predictions_original_scale, std_dev_original_scale_per_sample, mc_samples_original_scale
 
 
 def meta_train(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list[str], target_columns: list[str],
