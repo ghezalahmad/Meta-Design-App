@@ -524,44 +524,7 @@ def fine_tune_projection(model, inputs, targets, epochs=20, learning_rate=0.0001
     
     return model
 
-
-def protonet_train(model, data, input_columns, target_columns, epochs=50,
-                  learning_rate=0.001, num_tasks=5, num_shot=None, num_query=None,
-                  batch_size=16, scaler_x=None, scaler_y=None, early_stopping=True): # Existing signature
-
-    # ... (existing protonet_train code) ...
-
-    # At the end of protonet_train, before returning:
-    # model, scaler_x, scaler_y are the final model and scalers.
-    model.scaler_x = scaler_x # Assuming scaler_x is the final input scaler
-    model.scaler_y = scaler_y # Assuming scaler_y is the final target scaler
-    # is_trained flag is already handled conceptually by returning a trained model.
-    # Let's add an explicit flag like others.
-    # model.is_trained = True # This should be set after successful training.
-
-    # The return from protonet_train is model, scaler_x, scaler_y.
-    # The `is_trained` flag should be set within the training function.
-    # The original return of protonet_train is: return model, scaler_x, scaler_y
-    # We need to ensure these scalers are attached to the model object itself.
-    # Modifying protonet_train directly:
-
-# This is a bit tricky because protonet_train is a standalone function, not a class method.
-# The standard pattern is:
-# model_instance = ProtoNetModel(...)
-# trained_model, final_scaler_x, final_scaler_y = protonet_train(model_instance, ...)
-# trained_model.scaler_x = final_scaler_x
-# trained_model.scaler_y = final_scaler_y
-# trained_model.is_trained = True
-# This assignment would happen in main.py.
-
-# For the predict_with_uncertainty method to work, these attributes must be on the model object.
-# So, the responsibility lies with the caller of protonet_train (i.e., main.py)
-# to set these attributes on the returned model object.
-
-# Let's assume main.py will handle this. So, no change to protonet_train itself here for setting attributes.
-# The attributes will be expected on the model instance when predict_with_uncertainty is called.
-
-
+# Duplicated protonet_train definition and orphaned lines removed from here.
 def evaluate_protonet(model, data, input_columns, target_columns, curiosity, weights, max_or_min, acquisition="UCB"):
 
     # Get labeled and unlabeled data

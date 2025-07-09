@@ -632,8 +632,12 @@ def evaluate_maml(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list
         with torch.no_grad():
             predictions_scaled = meta_model(inputs_infer_tensor).numpy()
 
-        uncertainty_scores = calculate_uncertainty_ensemble(meta_model, inputs_infer_tensor,
-                                                            num_samples=30, dropout_rate=0.3)
+        # calculate_uncertainty_ensemble returns a tuple (uncertainty_np, predictions_stack)
+        # We only need the first element here for uncertainty_scores.
+        uncertainty_scores, _ = calculate_uncertainty_ensemble(
+            meta_model, inputs_infer_tensor,
+            num_samples=30, dropout_rate=0.3
+        )
 
         predictions = scaler_targets.inverse_transform(predictions_scaled)
         # Ensure predictions are non-negative, aligning with expected output characteristics.
