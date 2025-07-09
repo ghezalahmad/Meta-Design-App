@@ -231,7 +231,6 @@ def initialize_scheduler(optimizer, scheduler_type, **kwargs):
         )
     
     elif scheduler_type == "ReduceLROnPlateau":
-    elif scheduler_type == "ReduceLROnPlateau":
         # Reduce learning rate when a metric stops improving
         # Explicitly define all parameters for clarity and to avoid TypeErrors
         # from unexpected interactions with kwargs if a parameter is missing.
