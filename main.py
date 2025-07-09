@@ -22,7 +22,7 @@ from app.rf_model import RFModel, train_rf_model, evaluate_rf_model
 
 # Import utility functions
 from app.utils import (
-    calculate_utility, calculate_novelty, calculate_uncertainty,
+    calculate_utility, calculate_novelty, # calculate_uncertainty was removed
     set_seed, enforce_diversity, identify_pareto_front,
     balance_exploration_exploitation
 )
