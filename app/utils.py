@@ -252,8 +252,8 @@ def initialize_scheduler(optimizer, scheduler_type, **kwargs):
             threshold_mode=threshold_mode,
             cooldown=cooldown,
             min_lr=min_lr,
-            eps=eps,
-            verbose=verbose
+            eps=eps
+            # verbose argument removed for simplicity
         )
     
     elif scheduler_type == "StepLR":
