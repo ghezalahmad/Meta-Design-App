@@ -231,15 +231,30 @@ def initialize_scheduler(optimizer, scheduler_type, **kwargs):
         )
     
     elif scheduler_type == "ReduceLROnPlateau":
+    elif scheduler_type == "ReduceLROnPlateau":
         # Reduce learning rate when a metric stops improving
-        factor = kwargs.get("factor", 0.5)
-        patience = kwargs.get("patience", 5)
-        threshold = kwargs.get("threshold", 1e-4)
-        min_lr = kwargs.get("min_lr", 0) # Get min_lr from kwargs, default to 0
-        verbose = kwargs.get("verbose", False) # Get verbose from kwargs, default to False
+        # Explicitly define all parameters for clarity and to avoid TypeErrors
+        # from unexpected interactions with kwargs if a parameter is missing.
+        factor = float(kwargs.get("factor", 0.5))
+        patience = int(kwargs.get("patience", 10)) # Default from PyTorch docs
+        threshold = float(kwargs.get("threshold", 1e-4))
+        threshold_mode = str(kwargs.get("threshold_mode", 'rel'))
+        cooldown = int(kwargs.get("cooldown", 0))
+        min_lr = float(kwargs.get("min_lr", 0)) # Can also be a list
+        eps = float(kwargs.get("eps", 1e-8))
+        verbose = bool(kwargs.get("verbose", False))
+
         return optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=factor, patience=patience,
-            threshold=threshold, min_lr=min_lr, verbose=verbose
+            optimizer,
+            mode='min',
+            factor=factor,
+            patience=patience,
+            threshold=threshold,
+            threshold_mode=threshold_mode,
+            cooldown=cooldown,
+            min_lr=min_lr,
+            eps=eps,
+            verbose=verbose
         )
     
     elif scheduler_type == "StepLR":
