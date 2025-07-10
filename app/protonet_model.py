@@ -597,7 +597,8 @@ def evaluate_protonet(model, data, input_columns, target_columns, curiosity, wei
     # Calculate uncertainty using Monte Carlo dropout from app.models
     from app.models import calculate_uncertainty_ensemble
     # model.train() is handled by calculate_uncertainty_ensemble
-    uncertainty_scores = calculate_uncertainty_ensemble(
+    # Unpack the tuple correctly: (uncertainty_array, mc_samples_stack)
+    uncertainty_scores, _ = calculate_uncertainty_ensemble(
         model=model,
         X=inputs_infer_tensor,
         num_samples=50, # Corresponds to num_perturbations
