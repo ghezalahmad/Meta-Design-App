@@ -295,6 +295,24 @@ def weighted_uncertainty_ensemble(models, data, input_columns, target_columns,
         # Default to mean prediction
         result_df["Utility"] = result_df[target_columns].mean(axis=1)
     
+    # Calculate novelty
+    from app.utils import calculate_novelty
+    labeled_inputs = labeled_data[input_columns].values
+    unlabeled_inputs = unlabeled_data[input_columns].values
+
+    # We need to scale the inputs before calculating novelty
+    # Assuming the first model's scaler is representative
+    scaler_inputs = list(models.values())[0][1]
+    labeled_inputs_scaled = scaler_inputs.transform(labeled_inputs)
+    unlabeled_inputs_scaled = scaler_inputs.transform(unlabeled_inputs)
+
+    novelty_scores = calculate_novelty(unlabeled_inputs_scaled, labeled_inputs_scaled)
+    result_df["Novelty"] = novelty_scores
+
+    # Add exploration and exploitation columns
+    result_df["Exploration"] = result_df["Uncertainty"] * result_df["Novelty"]
+    result_df["Exploitation"] = 1.0 - result_df["Uncertainty"]
+
     # Sort by utility and mark highest utility sample
     result_df = result_df.sort_values("Utility", ascending=False)
     result_df["Selected_for_Testing"] = False
