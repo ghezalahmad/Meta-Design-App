@@ -15,6 +15,9 @@ def run(playwright):
     page.locator('div[data-testid="stSelectbox"]').filter(has_text="Choose Model Type:").click()
     page.get_by_role("option", name="PINN").click()
 
+    # Enable Bayesian Optimizer
+    page.get_by_label("Use Bayesian Optimizer for Next Suggestion").check()
+
     # Select input columns
     page.locator('div[data-testid="stMultiSelect"]').filter(has_text="Input Features:").click()
     page.get_by_role("option", name="Cement").click()

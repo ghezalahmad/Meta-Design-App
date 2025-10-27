@@ -1449,7 +1449,7 @@ if data is not None:
                                 result_df_bo["Novelty"] = novelty_scores_bo
 
                                 result_df_bo["Exploration"] = result_df_bo["Uncertainty"] * result_df_bo["Novelty"]
-                                result_df_bo["Exploitation"] = 1.0 - result_df_bo["Uncertainty"] # Simplistic
+                                result_df_bo["Exploitation"] = 1.0 - result_df_bo["Uncertainty"]
 
                                 result_df_bo = result_df_bo.sort_values(by="Utility", ascending=False)
                                 result_df_bo["Selected for Testing"] = False
