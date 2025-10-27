@@ -6,6 +6,7 @@ The **MetaDesign Dashboard** is an AI-driven application designed for material m
 ## 🎯 Key Features
 - **Streamlit Interface:** User-friendly interface for dataset uploading, model configuration, and visualization.
 - **MAML & Reptile Integration:** Allows dynamic switching between MAML and Reptile models for meta-learning.
+- **PINN Integration:** Includes a Physics-Informed Neural Network (PINN) model option to incorporate physical constraints into the learning process.
 - **Automated Hyperparameter Tuning:** Supports adaptive learning rates, batch sizes, and epoch settings.
 - **Acquisition Function Selection:** Choose between Expected Improvement (EI), Upper Confidence Bound (UCB), and Probability of Improvement (PI).
 - **Sequential Learning Strategy:** Iteratively suggest the best candidates for lab testing based on utility, novelty, and uncertainty.
@@ -53,8 +54,8 @@ streamlit run main.py
 
 ## 🧠 Usage
 1. **Upload Dataset:** Upload your material dataset in CSV format.
-2. **Model Selection:** Choose between **MAML** and **Reptile** models.
-3. **Configure Parameters:** Adjust hyperparameters, batch size, epochs, and acquisition function.
+2. **Model Selection:** Choose between **MAML**, **Reptile**, and **PINN** models.
+3. **Configure Parameters:** Adjust hyperparameters, batch size, epochs, and acquisition function. For the PINN model, you can also adjust the `Physics Loss Weight`.
 4. **Run Meta-Learning:** Start the training process and evaluate the suggested material candidates.
 5. **Visualize Results:** View interactive plots showing the exploration vs. exploitation balance and utility scores.
 6. **Select Candidates for Testing:** Use the utility ranking to guide lab experiments.
