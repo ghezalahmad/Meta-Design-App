@@ -386,7 +386,7 @@ class BayesianOptimizer:
         
         # Get predictions and uncertainties using the new unified method
         # We don't need posterior samples for these standard acquisition functions.
-        mu, sigma, _ = self._get_surrogate_prediction(X, return_posterior_samples=False)
+        mu, sigma, _ = self._get_surrogate_prediction(X_np, return_posterior_samples=False)
         
         # Ensure sigma is non-negative (it's std_dev) and not zero to avoid division errors.
         sigma = np.maximum(sigma, 1e-9) # Changed from 1e-6 to 1e-9 for potentially smaller std devs

@@ -512,61 +512,67 @@ elif model_type == "PINN":
             st.info("Current strategy: Strong exploration - actively seeking novel regions")
 
 # Optimization Strategy Section
-st.sidebar.subheader("Optimization Strategy")
-use_bayesian_optimizer_for_suggestion = st.sidebar.checkbox(
-    "Use Bayesian Optimizer for Next Suggestion",
-    value=False,
-    help="If checked, the selected trained model (e.g., MAML, RF) will be used as a surrogate within a Bayesian Optimization loop. The BO will then use its own acquisition function (selected below) to score and rank candidate materials. If unchecked, the ranking is based on the model's direct utility/uncertainty estimates combined with the main curiosity slider."
-)
-acquisition_function_bo = "UCB"
-if use_bayesian_optimizer_for_suggestion:
-    bo_acq_help = """
-    Select the acquisition function for the Bayesian Optimizer:
-    - UCB (Upper Confidence Bound): Balances exploration and exploitation. Good default.
-    - EI (Expected Improvement): Focuses on improving over the best observed point. Good for exploitation.
-    - PI (Probability of Improvement): Similar to EI, but focuses on probability rather than magnitude of improvement.
-    """
-    acquisition_function_bo = st.sidebar.selectbox(
-        "BO Acquisition Function:",
-        options=["UCB", "EI", "PI"],
-        index=0,
-        format_func=lambda x: {"UCB": "Upper Confidence Bound", "EI": "Expected Improvement", "PI": "Probability of Improvement"}.get(x, x),
-        help=bo_acq_help
+if model_type != "PINN":
+    st.sidebar.subheader("Optimization Strategy")
+    use_bayesian_optimizer_for_suggestion = st.sidebar.checkbox(
+        "Use Bayesian Optimizer for Next Suggestion",
+        value=False,
+        help="If checked, the selected trained model (e.g., MAML, RF) will be used as a surrogate within a Bayesian Optimization loop. The BO will then use its own acquisition function (selected below) to score and rank candidate materials. If unchecked, the ranking is based on the model's direct utility/uncertainty estimates combined with the main curiosity slider."
     )
+    acquisition_function_bo = "UCB"
+    if use_bayesian_optimizer_for_suggestion:
+        bo_acq_help = """
+        Select the acquisition function for the Bayesian Optimizer:
+        - UCB (Upper Confidence Bound): Balances exploration and exploitation. Good default.
+        - EI (Expected Improvement): Focuses on improving over the best observed point. Good for exploitation.
+        - PI (Probability of Improvement): Similar to EI, but focuses on probability rather than magnitude of improvement.
+        """
+        acquisition_function_bo = st.sidebar.selectbox(
+            "BO Acquisition Function:",
+            options=["UCB", "EI", "PI"],
+            index=0,
+            format_func=lambda x: {"UCB": "Upper Confidence Bound", "EI": "Expected Improvement", "PI": "Probability of Improvement"}.get(x, x),
+            help=bo_acq_help
+        )
+else:
+    use_bayesian_optimizer_for_suggestion = False
 
 
 # Add ensemble option after model selection
-st.subheader("Ensemble Settings")
-use_ensemble = st.checkbox(
-    "Use Model Ensemble",
-    value=False,
-    help="Combines predictions from multiple models (MAML, Reptile, ProtoNet) for potentially more robust and accurate suggestions. This will take longer as each selected model needs to be trained."
-)
+if model_type != "PINN":
+    st.subheader("Ensemble Settings")
+    use_ensemble = st.checkbox(
+        "Use Model Ensemble",
+        value=False,
+        help="Combines predictions from multiple models (MAML, Reptile, ProtoNet) for potentially more robust and accurate suggestions. This will take longer as each selected model needs to be trained."
+    )
 
-if use_ensemble:
-    ensemble_col1, ensemble_col2 = st.columns(2)
-    
-    with ensemble_col1:
-        ensemble_models = st.multiselect(
-            "Models to Include in Ensemble:",
-            options=["MAML", "Reptile", "ProtoNet"],
-            default=[model_type] if model_type in ["MAML", "Reptile", "ProtoNet"] else ["MAML"], # Start with currently selected model if compatible
-            help="Select the meta-learning models to include in the ensemble. Random Forest is not available for ensembling in the current setup."
-        )
-    
-    with ensemble_col2:
-        weighting_help = """
-        Method to combine predictions from ensemble members:
-        - Equal: All models contribute equally.
-        - Performance-based: Models are weighted based on their performance on validation data (if available).
-        - Uncertainty-based: Models that are more confident (lower uncertainty) are given higher weight. (Note: May require specific uncertainty calibration).
-        """
-        weighting_method = st.selectbox(
-            "Ensemble Weighting Method:",
-            options=["Equal", "Performance-based", "Uncertainty-based"],
-            index=1, # Default to Performance-based
-            help=weighting_help
-        )
+    if use_ensemble:
+        ensemble_col1, ensemble_col2 = st.columns(2)
+
+        with ensemble_col1:
+            ensemble_models = st.multiselect(
+                "Models to Include in Ensemble:",
+                options=["MAML", "Reptile", "ProtoNet"],
+                default=[model_type] if model_type in ["MAML", "Reptile", "ProtoNet"] else ["MAML"], # Start with currently selected model if compatible
+                help="Select the meta-learning models to include in the ensemble. Random Forest is not available for ensembling in the current setup."
+            )
+
+        with ensemble_col2:
+            weighting_help = """
+            Method to combine predictions from ensemble members:
+            - Equal: All models contribute equally.
+            - Performance-based: Models are weighted based on their performance on validation data (if available).
+            - Uncertainty-based: Models that are more confident (lower uncertainty) are given higher weight. (Note: May require specific uncertainty calibration).
+            """
+            weighting_method = st.selectbox(
+                "Ensemble Weighting Method:",
+                options=["Equal", "Performance-based", "Uncertainty-based"],
+                index=1, # Default to Performance-based
+                help=weighting_help
+            )
+else:
+    use_ensemble = False
 
 
 
@@ -630,10 +636,8 @@ def load_and_edit_dataset(upload_folder="uploads"):
 
 # Run the dataset loader in the Streamlit app
 data = load_and_edit_dataset()
-
-
-# Define feature selection and targets
-if data is not None:    
+if data is not None:
+    # Define feature selection and targets
     # Data columns selection with improved UI
     col1, col2, col3 = st.columns(3)
 

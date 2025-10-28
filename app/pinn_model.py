@@ -25,18 +25,23 @@ class PINNModel(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-    def predict_with_uncertainty(self, X_df_original_scale: pd.DataFrame, input_columns: list[str], num_samples=30, dropout_rate=0.3):
+    def predict_with_uncertainty(self, X_input: pd.DataFrame | np.ndarray, input_columns: list[str], num_samples=30, dropout_rate=0.3):
         if not getattr(self, 'is_trained', False) or self.scaler_x is None or self.scaler_y is None:
             raise RuntimeError("Model is not trained yet or scalers are missing. Call pinn_train first.")
 
-        self.train() # Enable dropout for MC samples
+        self.train()  # Enable dropout for MC samples
 
         # Set dropout rate for all dropout layers
         for module in self.modules():
             if isinstance(module, torch.nn.Dropout):
                 module.p = dropout_rate
 
-        X_processed = X_df_original_scale[input_columns]
+        # Handle both DataFrame and numpy array inputs
+        if isinstance(X_input, pd.DataFrame):
+            X_processed = X_input[input_columns].values
+        else:  # Assumes numpy array
+            X_processed = X_input
+
         X_scaled_np = self.scaler_x.transform(X_processed)
         X_tensor = torch.tensor(X_scaled_np, dtype=torch.float32)
 
