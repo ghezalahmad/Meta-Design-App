@@ -7,6 +7,7 @@ The **MetaDesign Dashboard** is an AI-driven application designed for material m
 - **Streamlit Interface:** User-friendly interface for dataset uploading, model configuration, and visualization.
 - **MAML & Reptile Integration:** Allows dynamic switching between MAML and Reptile models for meta-learning.
 - **PINN Integration:** Includes a Physics-Informed Neural Network (PINN) model option to incorporate physical constraints into the learning process.
+- **Digital Lab for Design Space Creation:** A powerful feature to generate a design space from scratch. Instead of uploading a dataset, you can define material components, their properties (e.g., cost, density), and constraints. The application then generates a comprehensive dataset of material formulations for the AI models to analyze.
 - **Automated Hyperparameter Tuning:** Supports adaptive learning rates, batch sizes, and epoch settings.
 - **Acquisition Function Selection:** Choose between Expected Improvement (EI), Upper Confidence Bound (UCB), and Probability of Improvement (PI).
 - **Sequential Learning Strategy:** Iteratively suggest the best candidates for lab testing based on utility, novelty, and uncertainty.
@@ -19,6 +20,7 @@ MAML-App/
 ├─ app/                   # Application-specific modules
 │   ├─ models/            # MAML and Reptile models
 │   ├─ utils/             # Utility functions (e.g., calculate_utility, calculate_novelty)
+│   ├─ digital_lab.py     # UI and logic for the Digital Lab feature
 │   ├─ visualization.py    # Visualization functions with Plotly
 ├─ data/                  # Example datasets
 ├─ main.py                # Main Streamlit application
@@ -53,7 +55,9 @@ streamlit run main.py
 - Open your browser at: `http://localhost:8501`
 
 ## 🧠 Usage
-1. **Upload Dataset:** Upload your material dataset in CSV format.
+1. **Choose Your Data Source:**
+   - **Upload Dataset:** Upload your material dataset in CSV format.
+   - **Create with Digital Lab:** Use the Digital Lab to define material components and generate a design space on the fly.
 2. **Model Selection:** Choose between **MAML**, **Reptile**, and **PINN** models.
 3. **Configure Parameters:** Adjust hyperparameters, batch size, epochs, and acquisition function. For the PINN model, you can also adjust the `Physics Loss Weight`.
 4. **Run Meta-Learning:** Start the training process and evaluate the suggested material candidates.

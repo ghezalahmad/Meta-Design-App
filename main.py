@@ -50,6 +50,7 @@ from app.bayesian_optimizer import (
     multi_objective_bayesian_optimization,
     BayesianOptimizer
 )
+from app.digital_lab import digital_lab_ui
 # At the top of your Streamlit app
 # Set random seed for reproducibility
 set_seed(42)
@@ -579,63 +580,69 @@ else:
 # Dataset Management
 st.header("Dataset Management")
 
+# --- Data Source Selection ---
+data_source = st.radio(
+    "Choose a data source:",
+    ("Upload Dataset", "Create with Digital Lab"),
+    horizontal=True,
+    key="data_source_selector"
+)
 
+# Initialize data variable
+data = None
 
-
-# Load & Display Dataset with Editing Capability
-def load_and_edit_dataset(upload_folder="uploads"):
-    uploaded_file = st.file_uploader("Upload Dataset (CSV format):", type=["csv"])
-    
-    if "dataset" not in st.session_state:
-        st.session_state["dataset"] = None
-
-    if uploaded_file:
-        file_path = os.path.join(upload_folder, uploaded_file.name)
-        os.makedirs(upload_folder, exist_ok=True)
-        with open(file_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        df = pd.read_csv(file_path)
-        st.session_state["dataset"] = df
-        st.success("Dataset uploaded successfully!")
-
-    # Display the dataset if available
-    if st.session_state["dataset"] is not None:
-        st.markdown("### Editable Dataset")
-        df = st.session_state["dataset"].copy()
+if data_source == "Upload Dataset":
+    # --- Original File Upload and Edit Logic ---
+    def load_and_edit_dataset(upload_folder="uploads"):
+        uploaded_file = st.file_uploader("Upload Dataset (CSV format):", type=["csv"])
         
-        # Make the table editable
-        gb = GridOptionsBuilder.from_dataframe(df)
-        gb.configure_default_column(editable=True)
-        gb.configure_selection(selection_mode="single", use_checkbox=True)
-        grid_options = gb.build()
+        if "dataset" not in st.session_state:
+            st.session_state["dataset"] = None
 
-        grid_response = AgGrid(
-            df,
-            gridOptions=grid_options,
-            update_mode=GridUpdateMode.VALUE_CHANGED,
-            data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
-            fit_columns_on_grid_load=True,
-            theme="streamlit",
-        )
+        if uploaded_file:
+            file_path = os.path.join(upload_folder, uploaded_file.name)
+            os.makedirs(upload_folder, exist_ok=True)
+            with open(file_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            df = pd.read_csv(file_path)
+            st.session_state["dataset"] = df
+            st.success("Dataset uploaded successfully!")
 
-        # Update session state with the modified dataframe
-        df_edited = pd.DataFrame(grid_response["data"])
-        
-        # ✅ Ensure numeric columns stay numeric
-        for col in df_edited.columns:
-            if df[col].dtype in ["int64", "float64"]:  # Only convert originally numeric columns
-                df_edited[col] = pd.to_numeric(df_edited[col], errors="coerce")
+        # Display the dataset if available
+        if st.session_state["dataset"] is not None:
+            st.markdown("### Editable Dataset")
+            df = st.session_state["dataset"].copy()
 
-        st.session_state["dataset"] = df_edited  # Save back to session state
+            gb = GridOptionsBuilder.from_dataframe(df)
+            gb.configure_default_column(editable=True)
+            gb.configure_selection(selection_mode="single", use_checkbox=True)
+            grid_options = gb.build()
 
-    return st.session_state["dataset"]
+            grid_response = AgGrid(
+                df,
+                gridOptions=grid_options,
+                update_mode=GridUpdateMode.VALUE_CHANGED,
+                data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+                fit_columns_on_grid_load=True,
+                theme="streamlit",
+            )
+            df_edited = pd.DataFrame(grid_response["data"])
+            for col in df_edited.columns:
+                if df[col].dtype in ["int64", "float64"]:
+                    df_edited[col] = pd.to_numeric(df_edited[col], errors="coerce")
+            st.session_state["dataset"] = df_edited
 
+        return st.session_state["dataset"]
 
+    data = load_and_edit_dataset()
 
-
-
-# Run the dataset loader in the Streamlit app
-data = load_and_edit_dataset()
+elif data_source == "Create with Digital Lab":
+    # --- Digital Lab UI ---
+    generated_df = digital_lab_ui()
+    if generated_df is not None:
+        # For consistency, let's also use the "dataset" session_state key
+        st.session_state.dataset = generated_df
+        data = generated_df
 if data is not None:
     # Define feature selection and targets
     # Data columns selection with improved UI
