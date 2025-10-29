@@ -8,9 +8,9 @@ The **MetaDesign Dashboard** is an AI-driven application designed for material m
 - **MAML & Reptile Integration:** Allows dynamic switching between MAML and Reptile models for meta-learning.
 - **PINN Integration:** Includes a Physics-Informed Neural Network (PINN) model option to incorporate physical constraints into the learning process.
 - **Digital Lab for Design Space Creation:** A powerful feature to generate a design space from scratch. Instead of uploading a dataset, you can define material components, their properties (e.g., cost, density), and constraints. The application then generates a comprehensive dataset of material formulations for the AI models to analyze.
+- **Full Sequential Learning Workflow:** The application now fully supports a closed-loop, iterative experimental workflow. It suggests a candidate, you test it in the lab, log the results directly in the UI, and the model retrains with the new data to provide an even more informed suggestion for the next experiment.
 - **Automated Hyperparameter Tuning:** Supports adaptive learning rates, batch sizes, and epoch settings.
 - **Acquisition Function Selection:** Choose between Expected Improvement (EI), Upper Confidence Bound (UCB), and Probability of Improvement (PI).
-- **Sequential Learning Strategy:** Iteratively suggest the best candidates for lab testing based on utility, novelty, and uncertainty.
 - **Interactive Visualizations:** Plotly-based visualizations for exploration vs. exploitation and curiosity impact.
 - **Advanced Data Handling:** Supports missing values, a priori information, and batch dataset updates.
 
@@ -54,15 +54,31 @@ streamlit run main.py
 5. **Access the Dashboard:**
 - Open your browser at: `http://localhost:8501`
 
-## 🧠 Usage
-1. **Choose Your Data Source:**
-   - **Upload Dataset:** Upload your material dataset in CSV format.
-   - **Create with Digital Lab:** Use the Digital Lab to define material components and generate a design space on the fly.
-2. **Model Selection:** Choose between **MAML**, **Reptile**, and **PINN** models.
-3. **Configure Parameters:** Adjust hyperparameters, batch size, epochs, and acquisition function. For the PINN model, you can also adjust the `Physics Loss Weight`.
-4. **Run Meta-Learning:** Start the training process and evaluate the suggested material candidates.
-5. **Visualize Results:** View interactive plots showing the exploration vs. exploitation balance and utility scores.
-6. **Select Candidates for Testing:** Use the utility ranking to guide lab experiments.
+## 🧠 Usage: Running an Experimental Campaign
+The dashboard is designed to guide a full experimental campaign. Follow these steps for an iterative workflow:
+
+1. **Start Your Campaign:**
+   - **Option A: Upload Existing Data:** Start with a CSV file containing your initial experiments. Some rows should have measured target values, while others can be candidates you want to evaluate (with empty target values).
+   - **Option B: Create a Design Space:** Use the **Digital Lab** to define your material components and generate a large set of candidate formulations.
+
+2. **Configure and Run:**
+   - Select your input features and the target properties you want to optimize.
+   - Choose a model (**MAML**, **Reptile**, or **PINN**) and configure its parameters.
+   - Click **"Run Experiment"**. The model will train on your existing data and rank the unlabeled candidates.
+
+3. **Synthesize and Test:**
+   - The top-ranked candidate will be displayed under **"🔬 Suggested Sample for Lab Testing"**.
+   - Take this formulation and test it in your physical lab to measure its actual properties.
+
+4. **Log Your Results:**
+   - Once you have the results, return to the dashboard.
+   - In the **"📝 Log Lab Experiment Results"** section, enter the measured values for the target properties.
+   - Click **"Add Result to Dataset"**. The dataset will be instantly updated with this new, valuable information.
+
+5. **Iterate:**
+   - The main button will now read **"Suggest Next Experiment"**.
+   - Click it to re-run the analysis. The model will now learn from the result you just added and propose a new best candidate.
+   - Repeat steps 3-5 to continuously refine your material formulations.
 
 ## 📊 Visualization
 The application offers dynamic visualizations to illustrate:

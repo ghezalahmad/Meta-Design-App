@@ -925,7 +925,10 @@ if data is not None:
     run_col1 = st.columns([1])[0]  # A single full-width column
 
     with run_col1:
-        if st.button("Run Experiment", key="run_experiment", use_container_width=True):
+        # --- Iterative Loop Control ---
+        button_label = "Suggest Next Experiment" if st.session_state.get("experiment_run", False) else "Run Experiment"
+
+        if st.button(button_label, key="run_experiment", use_container_width=True):
             # Validate input
             if not input_columns:
                 st.error("Please select at least one input feature.")
@@ -1527,7 +1530,41 @@ if data is not None:
 
                         # Show suggested sample
                         st.markdown("### 🔬 **Suggested Sample for Lab Testing:**")
-                        st.dataframe(result_df.iloc[0:1], use_container_width=True)
+                        suggested_sample = result_df.iloc[0:1]
+                        st.dataframe(suggested_sample, use_container_width=True)
+
+                        # --- Log Experiment Result UI ---
+                        st.markdown("### 📝 **Log Lab Experiment Results**")
+                        st.write("Enter the measured results for the suggested sample below to update the dataset and refine the next suggestion.")
+
+                        # Create a form for the user to input results
+                        with st.form(key="log_results_form"):
+                            experimental_results = {}
+                            cols = st.columns(len(target_columns))
+                            for i, col_name in enumerate(target_columns):
+                                with cols[i]:
+                                    experimental_results[col_name] = st.number_input(
+                                        label=f"Measured {col_name}",
+                                        key=f"measured_{col_name}",
+                                        format="%.4f" # Adjust format as needed
+                                    )
+
+                            submitted = st.form_submit_button("Add Result to Dataset")
+
+                            if submitted:
+                                # --- Dataset Update Logic ---
+                                # Get the index of the suggested sample from the original dataset
+                                # The suggested_sample DataFrame still has the original index
+                                sample_index = suggested_sample.index[0]
+
+                                # Update the main dataset in session_state
+                                for col_name, value in experimental_results.items():
+                                    st.session_state.dataset.loc[sample_index, col_name] = value
+
+                                st.success(f"Successfully updated sample at index {sample_index} with new results.")
+                                st.info("The dataset view has been updated. You can now run the next experiment.")
+                                # We don't need an explicit rerun here, as Streamlit's form submission
+                                # and the subsequent state update will trigger a natural rerun.
 
                     # Display ensemble info if available
                     if "ensemble_info" in st.session_state and st.session_state["ensemble_info"]:
