@@ -67,13 +67,13 @@ The dashboard is designed to guide a full experimental campaign. Follow these st
    - Click **"Run Experiment"**. The model will train on your existing data and rank the unlabeled candidates.
 
 3. **Synthesize and Test:**
-   - The top-ranked candidate will be displayed under **"🔬 Suggested Sample for Lab Testing"**.
-   - Take this formulation and test it in your physical lab to measure its actual properties.
+   - The model will suggest a top-ranked candidate, but you are free to test **any** sample from the "Editable Dataset" table. Note the "Sample Index" of the formulation you choose to test in your lab.
 
 4. **Log Your Results:**
-   - Once you have the results, return to the dashboard.
-   - In the **"📝 Log Lab Experiment Results"** section, enter the measured values for the target properties.
-   - Click **"Add Result to Dataset"**. The dataset will be instantly updated with this new, valuable information.
+   - Once you have the results from your physical experiment, return to the dashboard.
+   - In the **"📝 Log Lab Experiment Results"** section, enter the **Sample Index** of the sample you tested.
+   - Fill in the measured values for each of the target properties.
+   - Click **"Add Result to Dataset"**. The dataset will be instantly updated with this new, valuable information, and the table will refresh.
 
 5. **Iterate:**
    - The main button will now read **"Suggest Next Experiment"**.

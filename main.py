@@ -613,13 +613,21 @@ if data_source == "Upload Dataset":
             st.markdown("### Editable Dataset")
             df = st.session_state["dataset"].copy()
 
-            gb = GridOptionsBuilder.from_dataframe(df)
+            # --- Index Visibility ---
+            # Ensure the index is visible and clearly labeled.
+            df_display = df.reset_index().rename(columns={"index": "Sample Index"})
+
+            gb = GridOptionsBuilder.from_dataframe(df_display)
             gb.configure_default_column(editable=True)
             gb.configure_selection(selection_mode="single", use_checkbox=True)
+
+            # Make the index column non-editable for safety
+            gb.configure_column("Sample Index", editable=False)
+
             grid_options = gb.build()
 
             grid_response = AgGrid(
-                df,
+                df_display,
                 gridOptions=grid_options,
                 update_mode=GridUpdateMode.VALUE_CHANGED,
                 data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
@@ -1539,6 +1547,16 @@ if data is not None:
 
                         # Create a form for the user to input results
                         with st.form(key="log_results_form"):
+
+                            # --- Sample Index Input ---
+                            sample_index_to_log = st.number_input(
+                                label="Enter Index of Tested Sample",
+                                min_value=0,
+                                max_value=len(st.session_state.dataset) - 1,
+                                value=suggested_sample.index[0],
+                                help="Enter the index of the sample you tested. You can find the index in the 'Editable Dataset' table above."
+                            )
+
                             experimental_results = {}
                             cols = st.columns(len(target_columns))
                             for i, col_name in enumerate(target_columns):
@@ -1552,19 +1570,17 @@ if data is not None:
                             submitted = st.form_submit_button("Add Result to Dataset")
 
                             if submitted:
-                                # --- Dataset Update Logic ---
-                                # Get the index of the suggested sample from the original dataset
-                                # The suggested_sample DataFrame still has the original index
-                                sample_index = suggested_sample.index[0]
+                                # --- Flexible Dataset Update Logic ---
+                                # Use the user-provided index to update the correct sample
+                                sample_index_to_update = int(sample_index_to_log)
 
                                 # Update the main dataset in session_state
                                 for col_name, value in experimental_results.items():
-                                    st.session_state.dataset.loc[sample_index, col_name] = value
+                                    st.session_state.dataset.loc[sample_index_to_update, col_name] = value
 
-                                st.success(f"Successfully updated sample at index {sample_index} with new results.")
+                                st.success(f"Successfully updated sample at index {sample_index_to_update} with new results.")
                                 st.info("The dataset view has been updated. You can now run the next experiment.")
-                                # We don't need an explicit rerun here, as Streamlit's form submission
-                                # and the subsequent state update will trigger a natural rerun.
+                                # A rerun is implicitly triggered by the form submission, refreshing the UI
 
                     # Display ensemble info if available
                     if "ensemble_info" in st.session_state and st.session_state["ensemble_info"]:
