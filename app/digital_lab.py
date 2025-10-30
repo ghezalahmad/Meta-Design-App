@@ -2,10 +2,53 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
+def generate_design_space(components, num_samples):
+    """
+    Generates a design space DataFrame based on material components and the number of samples.
+
+    This is a pure logic function, free of any Streamlit UI code, making it easily testable.
+
+    Args:
+        components (list of dict): A list of component dictionaries, where each dict has
+                                   'name' and 'properties' keys.
+        num_samples (int): The number of sample formulations to generate.
+
+    Returns:
+        pandas.DataFrame: A DataFrame representing the generated design space, with columns
+                          for component ratios and calculated properties.
+    """
+    if not components or not all(c.get('name') for c in components):
+        # Return an empty DataFrame or raise an error if components are not well-defined
+        return pd.DataFrame()
+
+    component_names = [c['name'] for c in components]
+
+    # Generate random ratios that sum to 1 using the Dirichlet distribution
+    samples = np.random.dirichlet(np.ones(len(component_names)), size=num_samples)
+
+    df = pd.DataFrame(samples, columns=[f"{name}_ratio" for name in component_names])
+
+    # --- Robust Property Calculation ---
+    all_property_keys = set()
+    for component in components:
+        all_property_keys.update(component.get('properties', {}).keys())
+
+    for prop_name in sorted(list(all_property_keys)):
+        df[prop_name] = 0
+        for i, comp in enumerate(components):
+            ratio_col = f"{comp['name']}_ratio"
+            prop_value = comp.get('properties', {}).get(prop_name, 0)
+            df[prop_name] += df[ratio_col] * prop_value
+
+    return df
+
 def digital_lab_ui():
+    """
+    Renders the Streamlit UI for the Digital Lab and handles user interactions.
+    This function is now a "controller" that calls the pure `generate_design_space` logic.
+    """
     st.header("🧪 Digital Lab: Create Your Design Space")
 
-    # Initialize session state for components if it doesn't exist
     if 'components' not in st.session_state:
         st.session_state.components = [
             {'name': 'Cement', 'properties': {'cost': 5, 'density': 3.15}},
@@ -15,13 +58,11 @@ def digital_lab_ui():
 
     st.subheader("1. Define Material Components")
 
-    # --- Component Management ---
     for i, component in enumerate(st.session_state.components):
         with st.container():
             col1, col2, col_remove = st.columns([2, 4, 1])
-            component['name'] = col1.text_input(f"Component {i+1} Name", value=component['name'], key=f"name_{i}")
+            component['name'] = col1.text_input(f"Component {i+1} Name", value=component.get('name', ''), key=f"name_{i}")
 
-            # Properties
             props = component.get('properties', {})
             props_str = col2.text_area(
                 f"Properties (key: value)",
@@ -30,7 +71,6 @@ def digital_lab_ui():
                 height=100
             )
             try:
-                # Parse the properties string back into a dictionary
                 parsed_props = {}
                 for line in props_str.split('\n'):
                     if ':' in line:
@@ -50,10 +90,8 @@ def digital_lab_ui():
 
     st.subheader("2. Define Constraints and Generation Parameters")
 
-    # --- Constraints ---
     st.write("Constraint: The sum of component ratios must equal 1.")
 
-    # --- Generation Parameters ---
     num_samples = st.number_input(
         "Number of Samples to Generate",
         min_value=10,
@@ -65,40 +103,17 @@ def digital_lab_ui():
     st.subheader("3. Generate Design Space")
 
     if st.button("Generate Dataset"):
-        if not st.session_state.components or not all(c['name'] for c in st.session_state.components):
-            st.error("Please define at least one component and give it a name.")
-            return
-
-        # --- Generation Logic ---
         with st.spinner("Generating design space..."):
-            component_names = [c['name'] for c in st.session_state.components]
+            # Call the pure logic function
+            df = generate_design_space(st.session_state.components, num_samples)
 
-            # Generate random ratios that sum to 1
-            samples = np.random.dirichlet(np.ones(len(component_names)), size=num_samples)
+            if df.empty:
+                st.error("Please define at least one component and give it a name.")
+            else:
+                st.session_state.generated_df = df
+                st.success(f"Successfully generated a dataset with {num_samples} samples!")
+                st.dataframe(df.head())
 
-            df = pd.DataFrame(samples, columns=[f"{name}_ratio" for name in component_names])
-
-            # --- Robust Property Calculation ---
-            # 1. Collect all unique property keys from all components
-            all_property_keys = set()
-            for component in st.session_state.components:
-                all_property_keys.update(component.get('properties', {}).keys())
-
-            # 2. Calculate each property for the generated samples
-            for prop_name in sorted(list(all_property_keys)): # Sort for consistent column order
-                df[prop_name] = 0
-                for i, comp in enumerate(st.session_state.components):
-                    ratio_col = f"{comp['name']}_ratio"
-                    # Use .get(prop_name, 0) to handle cases where a component might not have a specific property
-                    prop_value = comp.get('properties', {}).get(prop_name, 0)
-                    df[prop_name] += df[ratio_col] * prop_value
-
-            # Store the generated data in session state
-            st.session_state.generated_df = df
-            st.success(f"Successfully generated a dataset with {num_samples} samples!")
-            st.dataframe(df.head())
-
-    # Return the generated dataframe if it exists
     return st.session_state.get('generated_df', None)
 
 if __name__ == '__main__':

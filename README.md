@@ -86,6 +86,22 @@ The application offers dynamic visualizations to illustrate:
 - **Curiosity Impact:** Shows how different curiosity settings affect candidate selection.
 - **Distributions:** Histograms of utility, novelty, and uncertainty scores.
 
+## 🧪 Testing
+This project uses `pytest` for unit and integration testing.
+
+1.  **Install Testing Dependencies:**
+    Make sure you have installed the full set of dependencies, including the testing tools:
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+2.  **Run All Tests:**
+    To run the entire test suite, navigate to the project's root directory and run:
+    ```bash
+    python -m pytest
+    ```
+    This will automatically discover and run all tests in the `tests/` directory.
+
 ## 👥 Contributors
 - **Ghezal Ahmad** - Project Lead
 - **Collaborators:** Contributions are welcome! Please submit a pull request or open an issue for feedback.

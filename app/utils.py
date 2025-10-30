@@ -63,6 +63,9 @@ def calculate_utility(predictions: np.ndarray, uncertainties: np.ndarray | None,
         uncertainties = np.ones((predictions.shape[0], 1)) * 0.1
     else:
         uncertainties = np.array(uncertainties)
+        if uncertainties.ndim > 1:
+            # If multi-dimensional, average across objectives for a single uncertainty score per sample
+            uncertainties = np.mean(uncertainties, axis=1)
         if uncertainties.ndim == 1:
             uncertainties = uncertainties.reshape(-1, 1)
         uncertainties = np.nan_to_num(uncertainties, nan=0.1, posinf=1.0, neginf=0.1)
