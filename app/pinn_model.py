@@ -108,7 +108,7 @@ def pinn_train(model, data, input_columns, target_columns, epochs, learning_rate
 
     return model, scaler_x, scaler_y
 
-def evaluate_pinn(model, data, input_columns, target_columns, curiosity, weights, max_or_min):
+def evaluate_pinn(model, data, input_columns, target_columns, curiosity, weights, max_or_min, acquisition="UCB"):
     unlabeled_data = data[data[target_columns].isna().any(axis=1)]
     if unlabeled_data.empty:
         st.warning("No unlabeled samples available for evaluation.")
@@ -125,7 +125,8 @@ def evaluate_pinn(model, data, input_columns, target_columns, curiosity, weights
         novelty_scores,
         curiosity,
         weights,
-        max_or_min
+        max_or_min,
+        acquisition=acquisition
     )
 
     result_df = unlabeled_data.copy()
