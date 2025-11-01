@@ -10,6 +10,20 @@ from app.rf_model import RFModel, train_rf_model, evaluate_rf_model
 from app.pinn_model import PINNModel, pinn_train, evaluate_pinn
 from app.ensemble import weighted_uncertainty_ensemble
 from app.bayesian_optimizer import multi_objective_bayesian_optimization, BayesianOptimizer
+from app.utils import select_acquisition_function
+from app.visualization import (
+    visualize_exploration_exploitation,
+    plot_scatter_matrix_with_uncertainty,
+    create_tsne_plot_with_hover,
+    create_parallel_coordinates,
+    create_3d_scatter,
+    create_pareto_front_visualization,
+    create_acquisition_function_visualization,
+    visualize_exploration_exploitation_tradeoff,
+    highlight_optimal_regions,
+    visualize_property_distributions,
+    visualize_model_comparison
+)
 
 st.set_page_config(page_title="Experimentation", layout="wide")
 
@@ -106,16 +120,34 @@ if st.button(button_label, key="run_experiment_button", use_container_width=True
         if model_type == "MAML":
             model = MAMLModel(input_size=len(input_columns), output_size=len(target_columns), hidden_size=hidden_size, num_layers=num_layers, dropout_rate=dropout_rate)
             model, scaler_inputs, scaler_targets = meta_train(meta_model=model, data=data, input_columns=input_columns, target_columns=target_columns, epochs=meta_epochs, inner_lr=inner_lr, outer_lr=outer_lr, num_tasks=num_tasks, inner_lr_decay=0.95, curiosity=curiosity, min_samples_per_task=3, early_stopping_patience=10)
-            result_df = evaluate_maml(meta_model=model, data=data, input_columns=input_columns, target_columns=target_columns, curiosity=curiosity, weights=weights_targets, max_or_min=max_or_min_targets, acquisition=None, dynamic_acquisition=True, min_labeled_samples=5)
+            st.session_state["acquisition_function"] = select_acquisition_function(curiosity, len(data.dropna(subset=target_columns)))
+            result_df = evaluate_maml(meta_model=model, data=data, input_columns=input_columns, target_columns=target_columns, curiosity=curiosity, weights=weights_targets, max_or_min=max_or_min_targets, acquisition=st.session_state.get("acquisition_function"), dynamic_acquisition=True, min_labeled_samples=5)
 
-        # ... (Add similar blocks for Reptile, ProtoNet, RF, PINN) ...
+        elif model_type == "Reptile":
+            model = ReptileModel(input_size=len(input_columns), output_size=len(target_columns), hidden_size=hidden_size, num_layers=num_layers, dropout_rate=dropout_rate)
+            model, scaler_inputs, scaler_targets = reptile_train(model=model, data=data, input_columns=input_columns, target_columns=target_columns, epochs=reptile_epochs, learning_rate=reptile_learning_rate, num_tasks=reptile_num_tasks)
+            st.session_state["acquisition_function"] = select_acquisition_function(curiosity, len(data.dropna(subset=target_columns)))
+            result_df = evaluate_reptile(model=model, data=data, input_columns=input_columns, target_columns=target_columns, curiosity=curiosity, weights=weights_targets, max_or_min=max_or_min_targets, acquisition=st.session_state.get("acquisition_function"))
+        elif model_type == "ProtoNet":
+            model = ProtoNetModel(input_size=len(input_columns), output_size=len(target_columns), embedding_size=embedding_size, num_layers=num_layers, dropout_rate=dropout_rate)
+            model, scaler_inputs, scaler_targets = protonet_train(model=model, data=data, input_columns=input_columns, target_columns=target_columns, epochs=protonet_epochs, learning_rate=protonet_learning_rate, num_tasks=protonet_num_tasks, num_shot=num_shot, num_query=num_query)
+            st.session_state["acquisition_function"] = select_acquisition_function(curiosity, len(data.dropna(subset=target_columns)))
+            result_df = evaluate_protonet(model=model, data=data, input_columns=input_columns, target_columns=target_columns, curiosity=curiosity, weights=weights_targets, max_or_min=max_or_min_targets, acquisition=st.session_state.get("acquisition_function"))
+        elif model_type == "Random Forest":
+            model, scaler_inputs, scaler_targets = train_rf_model(data=data, input_columns=input_columns, target_columns=target_columns, n_estimators=rf_n_estimators, perform_grid_search=rf_perform_grid_search)
+            st.session_state["acquisition_function"] = select_acquisition_function(curiosity, len(data.dropna(subset=target_columns)))
+            result_df = evaluate_rf_model(rf_model=model, data=data, input_columns=input_columns, target_columns=target_columns, curiosity=curiosity, weights=weights_targets, max_or_min=max_or_min_targets, acquisition=st.session_state.get("acquisition_function"))
+        elif model_type == "PINN":
+            model = PINNModel(input_size=len(input_columns), output_size=len(target_columns), hidden_size=hidden_size, num_layers=num_layers, dropout_rate=dropout_rate)
+            model, scaler_inputs, scaler_targets = pinn_train(model=model, data=data, input_columns=input_columns, target_columns=target_columns, epochs=pinn_epochs, learning_rate=pinn_learning_rate, physics_loss_weight=physics_loss_weight, batch_size=pinn_batch_size)
+            st.session_state["acquisition_function"] = select_acquisition_function(curiosity, len(data.dropna(subset=target_columns)))
+            result_df = evaluate_pinn(model=model, data=data, input_columns=input_columns, target_columns=target_columns, curiosity=curiosity, weights=weights_targets, max_or_min=max_or_min_targets, acquisition=st.session_state.get("acquisition_function"))
 
         st.session_state.model = model
         st.session_state.result_df = result_df
         st.session_state["experiment_run"] = True
-
         st.success("Experiment completed successfully!")
-        st.markdown("Navigate to the **Results Analysis** page to view the outcome.")
+
 
 # --- Log Experimental Results ---
 if st.session_state.get("experiment_run", False):
@@ -148,3 +180,110 @@ if st.session_state.get("experiment_run", False):
 
                 st.success(f"Successfully updated sample at index {sample_index_to_update}.")
                 st.info("The dataset has been updated. You can now re-run the experiment to get a new suggestion.")
+
+# --- Display Results ---
+result_df = st.session_state.get("result_df")
+if result_df is not None:
+    st.header("Experiment Summary")
+    st.markdown("#### Top 10 Suggested Samples:")
+    st.dataframe(result_df.head(10), use_container_width=True)
+
+    # Retrieve necessary parameters from session state for visualizations
+    target_columns = st.session_state.get("target_columns", [])
+    input_columns = st.session_state.get("input_columns", [])
+    optimization_params = st.session_state.get("optimization_params", {})
+
+    # --- Visualization Tabs ---
+    tab1, tab2, tab3 = st.tabs(["📈 Target Analysis", "🧠 Model Insights", "🔬 Advanced Analysis"])
+
+    with tab1:
+        st.header("Target Property Visualizations")
+        st.info("Explore the relationships and distributions of your target properties based on the model's predictions.")
+
+        if not target_columns:
+            st.warning("No target columns selected. Please configure them on the 'Data Setup' page.")
+        else:
+            # Pareto Front
+            if len(target_columns) >= 2:
+                st.subheader("Pareto Front")
+                col1, col2 = st.columns(2)
+                obj1 = col1.selectbox("First objective:", target_columns, index=0, key="pareto_obj1")
+                obj2 = col2.selectbox("Second objective:", target_columns, index=min(1, len(target_columns)-1), key="pareto_obj2")
+                obj_directions = [optimization_params.get(obj1, {}).get("direction", "max"), optimization_params.get(obj2, {}).get("direction", "max")]
+                fig = create_pareto_front_visualization(result_df, [obj1, obj2], obj_directions)
+                st.plotly_chart(fig, use_container_width=True)
+
+            # Scatter Matrix
+            st.subheader("Scatter Matrix of Target Properties")
+            fig = plot_scatter_matrix_with_uncertainty(result_df, target_columns, "Utility")
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Property Distributions
+            st.subheader("Property Distributions")
+            fig = visualize_property_distributions(result_df, target_columns)
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Parallel Coordinates
+            st.subheader("Parallel Coordinates Plot")
+            fig = create_parallel_coordinates(result_df, target_columns)
+            st.plotly_chart(fig, use_container_width=True)
+
+            # 3D Scatter
+            if len(target_columns) >= 3:
+                st.subheader("3D Scatter Plot")
+                x_prop = st.selectbox("X-axis property:", target_columns, index=0, key="3d_x")
+                y_prop = st.selectbox("Y-axis property:", target_columns, index=min(1, len(target_columns)-1), key="3d_y")
+                z_prop = st.selectbox("Z-axis property:", target_columns, index=min(2, len(target_columns)-1), key="3d_z")
+                color_by = st.radio("Color by:", ["Utility", "Uncertainty", "Novelty"] + target_columns, horizontal=True, key="3d_color")
+                fig = create_3d_scatter(result_df, x_prop, y_prop, z_prop, color_by=color_by)
+                st.plotly_chart(fig, use_container_width=True)
+
+    with tab2:
+        st.header("Model Behavior and Insights")
+        st.info("Understand how the model arrived at its suggestions and the balance between exploration and exploitation.")
+
+        # Acquisition Function
+        st.subheader("Acquisition Function Analysis")
+        # Note: 'curiosity' value might need to be retrieved more robustly from session state
+        curiosity = st.session_state.get("curiosity", 0.0)
+        acquisition_function = st.session_state.get("acquisition_function", "UCB")
+        fig = create_acquisition_function_visualization(result_df, acquisition_function, curiosity)
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Exploration vs Exploitation Tradeoff
+        st.subheader("Exploration vs. Exploitation Tradeoff")
+        fig = visualize_exploration_exploitation_tradeoff(result_df)
+        st.plotly_chart(fig, use_container_width=True)
+
+        # t-SNE
+        st.subheader("t-SNE Visualization of Input Space")
+        if input_columns:
+            fig = create_tsne_plot_with_hover(result_df, input_columns, "Utility")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("No input columns selected for t-SNE.")
+
+    with tab3:
+        st.header("Advanced Analysis")
+        st.info("Perform deeper analysis, such as comparing models or identifying optimal regions in the design space.")
+
+        # Optimal Regions
+        if len(input_columns) >= 2 and len(target_columns) > 0:
+            st.subheader("Optimal Regions Analysis")
+            max_or_min_targets = [optimization_params.get(col, {}).get("direction", "max") for col in target_columns]
+            highlight_df = pd.concat([result_df[target_columns], result_df[input_columns]], axis=1)
+            fig = highlight_optimal_regions(highlight_df, target_columns, max_or_min_targets)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("Optimal Regions Analysis requires at least 2 input features and 1 target property.")
+
+        # Model Comparison
+        if "model_history" in st.session_state and len(st.session_state["model_history"]) > 1:
+            st.subheader("Model Comparison")
+            # This is a placeholder for a more detailed comparison UI
+            st.write("Model comparison functionality would be implemented here.")
+            # fig = visualize_model_comparison(...)
+            # st.plotly_chart(fig)
+
+else:
+    st.info("No results to display. Please run an experiment on the 'Experimentation' page first.")
