@@ -259,7 +259,16 @@ if result_df is not None:
         # t-SNE
         st.subheader("t-SNE Visualization of Input Space")
         if input_columns:
-            fig = create_tsne_plot_with_hover(result_df, input_columns, "Utility")
+            # Combine labeled data and predictions for a comprehensive t-SNE plot
+            labeled_data = st.session_state.dataset.dropna(subset=target_columns)
+            labeled_data['is_train_data'] = 'Train'
+
+            predictions_df = result_df.copy()
+            predictions_df['is_train_data'] = 'Predicted'
+
+            combined_df = pd.concat([labeled_data, predictions_df], ignore_index=True)
+
+            fig = create_tsne_plot_with_hover(combined_df, input_columns, "Utility")
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.warning("No input columns selected for t-SNE.")

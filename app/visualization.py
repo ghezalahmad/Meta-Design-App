@@ -371,7 +371,7 @@ def create_parallel_coordinates(result_df, target_columns):
     
     # Highlight selected sample with a red line
     selected_row = plot_df[plot_df["Selected"] == "Yes"]
-    if not selected_row.empty:
+    if not selected_row.empty and np.isfinite(selected_row["Utility"].iloc[0]):
         dimensions = target_columns + ["Utility", "Uncertainty", "Novelty"]
         selected_values = []
         
