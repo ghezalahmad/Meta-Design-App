@@ -373,21 +373,19 @@ def create_parallel_coordinates(result_df, target_columns):
     selected_row = plot_df[plot_df["Selected"] == "Yes"]
     if not selected_row.empty and np.isfinite(selected_row["Utility"].iloc[0]):
         dimensions = target_columns + ["Utility", "Uncertainty", "Novelty"]
-        selected_values = []
+        selected_values = [selected_row[dim].values[0] for dim in dimensions]
         
-        for dim in dimensions:
-            selected_values.append(selected_row[dim].values[0])
-        
-        fig.add_trace(
-            go.Scattergl(
-                dimensions=[
-                    dict(label=dimensions[i], values=[selected_values[i]])
-                    for i in range(len(dimensions))
-                ],
-                line=dict(color="red", width=5),
-                name="Selected Sample"
+        if all(np.isfinite(val) for val in selected_values):
+            fig.add_trace(
+                go.Scattergl(
+                    dimensions=[
+                        dict(label=dimensions[i], values=[selected_values[i]])
+                        for i in range(len(dimensions))
+                    ],
+                    line=dict(color="red", width=5),
+                    name="Selected Sample"
+                )
             )
-        )
     
     return fig
 
