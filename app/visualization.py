@@ -347,6 +347,9 @@ def create_parallel_coordinates(result_df, target_columns):
     # Add selection information
     plot_df["Selected"] = plot_df["Selected for Testing"].map({True: "Yes", False: "No"})
     
+    # Replace non-finite utility values with NaN for stable plotting
+    plot_df['Utility'] = plot_df['Utility'].replace([np.inf, -np.inf], np.nan)
+
     # Create parallel coordinates plot
     fig = px.parallel_coordinates(
         plot_df,
