@@ -214,9 +214,10 @@ if result_df is not None:
                 st.plotly_chart(fig, use_container_width=True)
 
             # Scatter Matrix
-            st.subheader("Scatter Matrix of Target Properties")
-            fig = plot_scatter_matrix_with_uncertainty(result_df, target_columns, "Utility")
-            st.plotly_chart(fig, use_container_width=True)
+            if len(target_columns) >= 2:
+                st.subheader("Scatter Matrix of Target Properties")
+                fig = plot_scatter_matrix_with_uncertainty(result_df, target_columns, "Utility")
+                st.plotly_chart(fig, use_container_width=True)
 
             # Property Distributions
             st.subheader("Property Distributions")
