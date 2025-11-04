@@ -62,7 +62,34 @@ elif model_type == "Reptile":
     reptile_num_tasks = st.sidebar.slider("Number of Tasks:", 2, 10, 5)
     curiosity = st.sidebar.slider("Curiosity:", -2.0, 2.0, 0.0, 0.1)
 
-# ... (Add configurations for other models: ProtoNet, RF, PINN) ...
+elif model_type == "ProtoNet":
+    st.sidebar.subheader("ProtoNet Configuration")
+    embedding_size = st.sidebar.slider("Embedding Size:", 64, 512, 128)
+    num_layers = st.sidebar.slider("Number of Layers:", 2, 5, 3)
+    dropout_rate = st.sidebar.slider("Dropout Rate:", 0.0, 0.5, 0.3)
+    protonet_learning_rate = st.sidebar.slider("Learning Rate:", 0.0001, 0.01, 0.001)
+    protonet_epochs = st.sidebar.slider("Training Epochs:", 10, 300, 50)
+    protonet_num_tasks = st.sidebar.slider("Number of Tasks:", 2, 10, 5)
+    num_shot = st.sidebar.slider("Support Samples (N-shot):", 1, 8, 4)
+    num_query = st.sidebar.slider("Query Samples:", 1, 8, 4)
+    curiosity = st.sidebar.slider("Curiosity:", -2.0, 2.0, 0.0, 0.1)
+
+elif model_type == "Random Forest":
+    st.sidebar.subheader("Random Forest Configuration")
+    rf_n_estimators = st.sidebar.slider("Number of Estimators:", 50, 500, 100)
+    rf_perform_grid_search = st.sidebar.checkbox("Perform GridSearchCV")
+    curiosity = st.sidebar.slider("Curiosity:", -2.0, 2.0, 0.0, 0.1)
+
+elif model_type == "PINN":
+    st.sidebar.subheader("PINN Configuration")
+    hidden_size = st.sidebar.slider("Hidden Size:", 64, 512, 128)
+    num_layers = st.sidebar.slider("Number of Layers:", 2, 5, 3)
+    dropout_rate = st.sidebar.slider("Dropout Rate:", 0.0, 0.5, 0.3)
+    pinn_learning_rate = st.sidebar.slider("Learning Rate:", 0.0001, 0.1, 0.001)
+    pinn_epochs = st.sidebar.slider("Training Epochs:", 10, 300, 50)
+    pinn_batch_size = st.sidebar.slider("Batch Size:", 4, 128, 16)
+    physics_loss_weight = st.sidebar.slider("Physics Loss Weight:", 0.0, 1.0, 0.1)
+    curiosity = st.sidebar.slider("Curiosity:", -2.0, 2.0, 0.0, 0.1)
 
 # --- Run Experiment ---
 st.header("Run Experiment")
@@ -88,7 +115,25 @@ if st.button(button_label, key="run_experiment_button", use_container_width=True
             model, _, _ = meta_train(model, data, input_columns, target_columns, meta_epochs, inner_lr, outer_lr, num_tasks)
             result_df = evaluate_maml(model, data, input_columns, target_columns, curiosity, weights_targets, max_or_min_targets)
 
-        # ... (Add logic for other models) ...
+        elif model_type == "Reptile":
+            model = ReptileModel(input_size=len(input_columns), output_size=len(target_columns), hidden_size=hidden_size, num_layers=num_layers, dropout_rate=dropout_rate)
+            model, _, _ = reptile_train(model, data, input_columns, target_columns, reptile_epochs, reptile_learning_rate, reptile_num_tasks)
+            result_df = evaluate_reptile(model, data, input_columns, target_columns, curiosity, weights_targets, max_or_min_targets)
+
+        elif model_type == "ProtoNet":
+            model = ProtoNetModel(input_size=len(input_columns), embedding_size=embedding_size, num_layers=num_layers, dropout_rate=dropout_rate)
+            model, _, _ = protonet_train(model, data, input_columns, target_columns, protonet_epochs, protonet_learning_rate, protonet_num_tasks, num_shot, num_query)
+            result_df = evaluate_protonet(model, data, input_columns, target_columns, num_shot, curiosity, weights_targets, max_or_min_targets)
+
+        elif model_type == "Random Forest":
+            model = RFModel(n_estimators=rf_n_estimators)
+            model, _ = train_rf_model(model, data, input_columns, target_columns, rf_perform_grid_search)
+            result_df = evaluate_rf_model(model, data, input_columns, target_columns, curiosity, weights_targets, max_or_min_targets)
+
+        elif model_type == "PINN":
+            model = PINNModel(input_size=len(input_columns), output_size=len(target_columns), hidden_size=hidden_size, num_layers=num_layers, dropout_rate=dropout_rate)
+            model, _, _ = pinn_train(model, data, input_columns, target_columns, pinn_epochs, pinn_learning_rate, pinn_batch_size, physics_loss_weight)
+            result_df = evaluate_pinn(model, data, input_columns, target_columns, curiosity, weights_targets, max_or_min_targets)
 
         st.session_state.model = model
         st.session_state.result_df = result_df
@@ -110,27 +155,70 @@ if st.session_state.get("experiment_run", False):
         tab1, tab2, tab3 = st.tabs(["📈 Target Analysis", "🧠 Model Insights", "🔬 Advanced Analysis"])
 
         with tab1:
-            # ... (Paste all visualization logic from 3_Results_Analysis.py here) ...
             st.header("Target Property Visualizations")
             if not target_columns:
                 st.warning("No target columns selected.")
             else:
                 if len(target_columns) >= 2:
                     st.subheader("Pareto Front")
-                    # ... (Pareto logic) ...
+                    col1, col2 = st.columns(2)
+                    obj1 = col1.selectbox("First objective:", target_columns, index=0, key="pareto_obj1")
+                    obj2 = col2.selectbox("Second objective:", target_columns, index=min(1, len(target_columns)-1), key="pareto_obj2")
+                    obj_directions = [optimization_params.get(obj1, {}).get("direction", "max"), optimization_params.get(obj2, {}).get("direction", "max")]
+                    fig = create_pareto_front_visualization(result_df, [obj1, obj2], obj_directions)
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
+
                 st.subheader("Scatter Matrix")
-                fig = plot_scatter_matrix_with_uncertainty(result_df, target_columns)
-                st.plotly_chart(fig, use_container_width=True)
+                fig = plot_scatter_matrix_with_uncertainty(result_df, target_columns, "Utility")
+                if fig:
+                    st.plotly_chart(fig, use_container_width=True)
+
+                st.subheader("Property Distributions")
+                fig = visualize_property_distributions(result_df, target_columns)
+                if fig:
+                    st.plotly_chart(fig, use_container_width=True)
+
                 st.subheader("Parallel Coordinates")
                 fig = create_parallel_coordinates(result_df, target_columns)
-                st.plotly_chart(fig, use_container_width=True)
+                if fig:
+                    st.plotly_chart(fig, use_container_width=True)
+
+                if len(target_columns) >= 3:
+                    st.subheader("3D Scatter Plot")
+                    x_prop = st.selectbox("X-axis property:", target_columns, index=0, key="3d_x")
+                    y_prop = st.selectbox("Y-axis property:", target_columns, index=min(1, len(target_columns)-1), key="3d_y")
+                    z_prop = st.selectbox("Z-axis property:", target_columns, index=min(2, len(target_columns)-1), key="3d_z")
+                    color_by = st.radio("Color by:", ["Utility", "Uncertainty", "Novelty"] + target_columns, horizontal=True, key="3d_color")
+                    fig = create_3d_scatter(result_df, x_prop, y_prop, z_prop, color_by=color_by)
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
         with tab2:
             st.header("Model Behavior and Insights")
-            # ... (t-SNE, etc.) ...
-            st.subheader("t-SNE Visualization")
-            fig = create_tsne_plot_with_hover(result_df, input_columns)
-            st.plotly_chart(fig, use_container_width=True)
+            curiosity = st.session_state.get("curiosity", 0.0)
+            fig = create_acquisition_function_visualization(result_df, None, curiosity)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
 
+            st.subheader("Exploration vs. Exploitation Tradeoff")
+            fig = visualize_exploration_exploitation_tradeoff(result_df)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+
+            st.subheader("t-SNE Visualization")
+            fig = create_tsne_plot_with_hover(result_df, input_columns, "Utility")
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+
+        with tab3:
+            st.header("Advanced Analysis")
+            if len(input_columns) >= 2 and len(target_columns) > 0:
+                st.subheader("Optimal Regions Analysis")
+                max_or_min_targets = [optimization_params.get(col, {}).get("direction", "max") for col in target_columns]
+                highlight_df = pd.concat([result_df[target_columns], result_df[input_columns]], axis=1)
+                fig = highlight_optimal_regions(highlight_df, target_columns, max_or_min_targets)
+                if fig:
+                    st.plotly_chart(fig, use_container_width=True)
 
         # --- Log Experimental Results ---
         st.header("Log Lab Experiment Results")

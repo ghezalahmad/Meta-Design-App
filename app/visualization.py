@@ -350,9 +350,6 @@ def create_parallel_coordinates(result_df, target_columns):
     # Add selection information
     plot_df["Selected"] = plot_df["Selected for Testing"].map({True: "Yes", False: "No"})
     
-    # Replace non-finite utility values with NaN for stable plotting
-    plot_df['Utility'] = plot_df['Utility'].replace([np.inf, -np.inf], np.nan)
-
     # Create parallel coordinates plot
     fig = px.parallel_coordinates(
         plot_df,
@@ -377,21 +374,23 @@ def create_parallel_coordinates(result_df, target_columns):
     
     # Highlight selected sample with a red line
     selected_row = plot_df[plot_df["Selected"] == "Yes"]
-    if not selected_row.empty and np.isfinite(selected_row["Utility"].iloc[0]):
+    if not selected_row.empty:
         dimensions = target_columns + ["Utility", "Uncertainty", "Novelty"]
-        selected_values = [selected_row[dim].values[0] for dim in dimensions]
+        selected_values = []
         
-        if all(np.isfinite(val) for val in selected_values):
-            fig.add_trace(
-                go.Scattergl(
-                    dimensions=[
-                        dict(label=dimensions[i], values=[selected_values[i]])
-                        for i in range(len(dimensions))
-                    ],
-                    line=dict(color="red", width=5),
-                    name="Selected Sample"
-                )
+        for dim in dimensions:
+            selected_values.append(selected_row[dim].values[0])
+
+        fig.add_trace(
+            go.Scattergl(
+                dimensions=[
+                    dict(label=dimensions[i], values=[selected_values[i]])
+                    for i in range(len(dimensions))
+                ],
+                line=dict(color="red", width=5),
+                name="Selected Sample"
             )
+        )
     
     return fig
 
