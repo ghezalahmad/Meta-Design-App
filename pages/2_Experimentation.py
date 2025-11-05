@@ -95,7 +95,7 @@ elif model_type == "PINN":
 st.header("Run Experiment")
 button_label = "Suggest Next Experiment" if st.session_state.get("experiment_run", False) else "Run Experiment"
 
-if st.button(button_label, key="run_experiment_button", use_container_width=True):
+if st.button(button_label, key="run_experiment_button", width='stretch'):
     data = st.session_state.dataset
     input_columns = st.session_state.get("input_columns", [])
     target_columns = st.session_state.get("target_columns", [])
@@ -144,8 +144,8 @@ if st.session_state.get("experiment_run", False):
     result_df = st.session_state.get("result_df")
     if result_df is not None:
         st.header("Experiment Summary & Analysis 📊")
-        st.markdown("#### Top 10 Suggested Samples:")
-        st.dataframe(result_df.head(10), use_container_width=True)
+        st.markdown("#### Full Suggested Samples:")
+        st.dataframe(result_df, width='stretch')
 
         target_columns = st.session_state.get("target_columns", [])
         input_columns = st.session_state.get("input_columns", [])
@@ -166,22 +166,22 @@ if st.session_state.get("experiment_run", False):
                     obj_directions = [optimization_params.get(obj1, {}).get("direction", "max"), optimization_params.get(obj2, {}).get("direction", "max")]
                     fig = create_pareto_front_visualization(result_df, [obj1, obj2], obj_directions)
                     if fig:
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width='stretch')
 
                 st.subheader("Scatter Matrix")
                 fig = plot_scatter_matrix_with_uncertainty(result_df, target_columns, "Utility")
                 if fig:
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
                 st.subheader("Property Distributions")
                 fig = visualize_property_distributions(result_df, target_columns)
                 if fig:
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
                 st.subheader("Parallel Coordinates")
                 fig = create_parallel_coordinates(result_df, target_columns)
                 if fig:
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
                 if len(target_columns) >= 3:
                     st.subheader("3D Scatter Plot")
@@ -191,23 +191,23 @@ if st.session_state.get("experiment_run", False):
                     color_by = st.radio("Color by:", ["Utility", "Uncertainty", "Novelty"] + target_columns, horizontal=True, key="3d_color")
                     fig = create_3d_scatter(result_df, x_prop, y_prop, z_prop, color_by=color_by)
                     if fig:
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width='stretch')
         with tab2:
             st.header("Model Behavior and Insights")
             curiosity = st.session_state.get("curiosity", 0.0)
             fig = create_acquisition_function_visualization(result_df, None, curiosity)
             if fig:
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
             st.subheader("Exploration vs. Exploitation Tradeoff")
             fig = visualize_exploration_exploitation_tradeoff(result_df)
             if fig:
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
             st.subheader("t-SNE Visualization")
             fig = create_tsne_plot_with_hover(result_df, input_columns, "Utility")
             if fig:
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
         with tab3:
             st.header("Advanced Analysis")
@@ -217,7 +217,7 @@ if st.session_state.get("experiment_run", False):
                 highlight_df = pd.concat([result_df[target_columns], result_df[input_columns]], axis=1)
                 fig = highlight_optimal_regions(highlight_df, target_columns, max_or_min_targets)
                 if fig:
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
         # --- Log Experimental Results ---
         st.header("Log Lab Experiment Results")
