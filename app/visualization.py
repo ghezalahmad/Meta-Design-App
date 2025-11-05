@@ -340,52 +340,52 @@ def create_parallel_coordinates(result_df, target_columns):
     """
     if not target_columns:
         return None
-    
-    # Create a copy of result_df with only the target columns and metrics
-    plot_df = result_df[target_columns + ["Utility", "Uncertainty", "Novelty", "Selected for Testing"]].copy()
-    
-    # Clean the DataFrame from non-finite values to prevent plotting errors
-    plot_df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
-    # Add selection information
-    plot_df["Selected"] = plot_df["Selected for Testing"].map({True: "Yes", False: "No"})
+    plot_df = result_df[target_columns + ["Utility", "Uncertainty", "Novelty", "Selected for Testing"]].copy()
+    plot_df.replace([np.inf, -np.inf], np.nan, inplace=True)
     
-    # Create parallel coordinates plot
-    fig = px.parallel_coordinates(
-        plot_df,
-        dimensions=target_columns + ["Utility", "Uncertainty", "Novelty"],
-        color="Utility",
-        color_continuous_scale="Viridis",
-        title="Parallel Coordinates of Material Properties"
-    )
-    
-    # Add custom styling
-    fig.update_layout(
-        width=None,
-        height=600,
-        coloraxis_colorbar=dict(
-            title="Utility",
-            thicknessmode="pixels", thickness=15,
-            lenmode="pixels", len=300,
-            yanchor="top", y=1,
-            xanchor="left", x=1.02
+    # Get the index of the selected row
+    selected_idx = plot_df[plot_df["Selected for Testing"] == True].index
+
+    # Create a color array for the lines
+    line_colors = plot_df['Utility'].copy()
+    # If a row is selected, set its color value to a value outside the normal range to map to red
+    if not selected_idx.empty:
+        # Use a value that will be distinctly colored, e.g., max utility + a buffer
+        highlight_color_value = plot_df['Utility'].max() + 1
+        line_colors.loc[selected_idx] = highlight_color_value
+
+    # Define a custom colorscale: 'Viridis' for the main data, and 'red' for the highlight
+    custom_colorscale = [[0.0, 'purple'], [0.5, 'green'], [1.0, 'yellow']] # Example: Viridis-like
+    if not selected_idx.empty:
+         # Normalize utility values to fit in the 0.0-0.9 range of the colorscale
+        max_utility = plot_df['Utility'].max()
+        normalized_colors = plot_df['Utility'] / max_utility * 0.9
+        # reset the selected line to the highlight color value
+        normalized_colors.loc[selected_idx] = 1.0
+        custom_colorscale = [[0.0, 'blue'], [0.9, 'yellow'], [1.0, 'red']]
+        line_color_values = normalized_colors
+    else:
+        line_color_values = plot_df['Utility']
+
+
+    dimensions = target_columns + ["Utility", "Uncertainty", "Novelty"]
+
+    fig = go.Figure(data=
+        go.Parcoords(
+            line = dict(color = line_color_values,
+                       colorscale = custom_colorscale,
+                       showscale = True,
+                       colorbar = {'title': 'Utility'}),
+            dimensions = [dict(range = [plot_df[dim].min(), plot_df[dim].max()],
+                               label = dim, values = plot_df[dim]) for dim in dimensions]
         )
     )
     
-    # Highlight selected sample with a red line
-    selected_row = plot_df[plot_df["Selected"] == "Yes"]
-    if not selected_row.empty:
-        # Ensure we handle the case where multiple rows might be selected by taking the first one
-        selected_sample = selected_row.iloc[0]
-
-        dimensions = target_columns + ["Utility", "Uncertainty", "Novelty"]
-        
-        fig.add_trace(go.Parcoords(
-            line=dict(color='red', width=4),
-            dimensions=[dict(range=[plot_df[dim].min(), plot_df[dim].max()],
-                             label=dim,
-                             values=[selected_sample[dim]]) for dim in dimensions]
-        ))
+    fig.update_layout(
+        title="Parallel Coordinates of Material Properties",
+        height=600,
+    )
     
     return fig
 
