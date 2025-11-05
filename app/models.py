@@ -216,7 +216,11 @@ def meta_train(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list[st
     
     # Adaptive loss function based on dataset size
     # Extract labeled data
-    labeled_data = data.dropna(subset=target_columns).sample(frac=1).reset_index(drop=True)
+    labeled_data = data.dropna(subset=target_columns).copy()
+
+    # Sort data by the first target variable to create more structured tasks
+    if not labeled_data.empty and len(target_columns) > 0:
+        labeled_data = labeled_data.sort_values(by=target_columns[0]).reset_index(drop=True)
 
     # ✅ Ensure target columns are numeric
     for col in target_columns:
@@ -640,8 +644,11 @@ def evaluate_maml(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list
         )
 
         predictions = scaler_targets.inverse_transform(predictions_scaled)
-        # Ensure predictions are non-negative, aligning with expected output characteristics.
-        predictions = np.maximum(predictions, 0)
+
+        # New safeguard: Clamp predictions to a reasonable range based on training data
+        min_target_val = labeled_data[target_columns].min().values
+        max_target_val = labeled_data[target_columns].max().values
+        predictions = np.clip(predictions, min_target_val, max_target_val * 1.2) # Allow 20% extrapolation
 
         result_df = unlabeled_data.copy()
         for i, col in enumerate(target_columns):
