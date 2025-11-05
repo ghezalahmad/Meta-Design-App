@@ -37,7 +37,7 @@ if "dataset" not in st.session_state or st.session_state.dataset is None:
 
 # --- Sidebar for Model Configuration ---
 st.sidebar.header("Model & Data Configuration")
-model_options = ["PINN", "Reptile", "ProtoNet", "Random Forest", "MAML"]
+model_options = ["MAML", "Reptile", "ProtoNet", "Random Forest", "PINN"]
 model_type = st.sidebar.selectbox("Choose Model Type:", options=model_options, key="model_type_selector")
 
 # Model-specific configuration
@@ -139,6 +139,7 @@ if st.button(button_label, key="run_experiment_button", width='stretch'):
 if st.session_state.get("experiment_run", False):
     result_df = st.session_state.get("result_df")
     if result_df is not None:
+        result_df["Row number"] = result_df.index
         st.header("Experiment Summary & Analysis 📊")
         st.markdown("#### Full Suggested Samples:")
         st.dataframe(result_df, width='stretch')

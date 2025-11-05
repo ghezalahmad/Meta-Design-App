@@ -346,7 +346,7 @@ def create_parallel_coordinates(result_df, target_columns):
     
     # Get the index of the selected row
     selected_idx = plot_df[plot_df["Selected for Testing"] == True].index
-
+    
     # Create a color array for the lines
     line_colors = plot_df['Utility'].copy()
     # If a row is selected, set its color value to a value outside the normal range to map to red
