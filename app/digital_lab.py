@@ -51,34 +51,27 @@ def digital_lab_ui():
 
     if 'components' not in st.session_state:
         st.session_state.components = [
-            {'name': 'Cement', 'properties': {'cost': 5, 'density': 3.15}},
-            {'name': 'Water', 'properties': {'cost': 0.1, 'density': 1.0}},
-            {'name': 'Sand', 'properties': {'cost': 0.5, 'density': 2.65}},
+            {'name': 'Cement', 'properties': {'Cost': 120, 'CO2': 800}},
+            {'name': 'Water', 'properties': {'Cost': 1, 'CO2': 0}},
+            {'name': 'Sand', 'properties': {'Cost': 20, 'CO2': 5}},
         ]
 
-    st.subheader("1. Define Material Components")
+    st.subheader("1. Define Material Components & Socio-Economic Metrics")
 
     for i, component in enumerate(st.session_state.components):
         with st.container():
-            col1, col2, col_remove = st.columns([2, 4, 1])
+            col1, col2, col3, col_remove = st.columns([2, 2, 2, 1])
             component['name'] = col1.text_input(f"Component {i+1} Name", value=component.get('name', ''), key=f"name_{i}")
 
-            props = component.get('properties', {})
-            props_str = col2.text_area(
-                f"Properties (key: value)",
-                value='\n'.join([f"{k}: {v}" for k, v in props.items()]),
-                key=f"props_{i}",
-                height=100
-            )
-            try:
-                parsed_props = {}
-                for line in props_str.split('\n'):
-                    if ':' in line:
-                        key, value = line.split(':', 1)
-                        parsed_props[key.strip()] = float(value.strip())
-                component['properties'] = parsed_props
-            except ValueError:
-                st.warning(f"Invalid format for properties of {component['name']}. Please use 'key: value' format.")
+            # Dedicated fields for socio-economic metrics
+            cost = col2.number_input("Cost ($/unit)", value=component.get('properties', {}).get('Cost', 0.0), key=f"cost_{i}", format="%.2f")
+            co2 = col3.number_input("CO2 (kg/unit)", value=component.get('properties', {}).get('CO2', 0.0), key=f"co2_{i}", format="%.2f")
+
+            # Store them back in the properties dictionary
+            if 'properties' not in component:
+                component['properties'] = {}
+            component['properties']['Cost'] = cost
+            component['properties']['CO2'] = co2
 
             if col_remove.button("Remove", key=f"remove_{i}"):
                 st.session_state.components.pop(i)
