@@ -37,7 +37,7 @@ if "dataset" not in st.session_state or st.session_state.dataset is None:
 
 # --- Sidebar for Model Configuration ---
 st.sidebar.header("Model & Data Configuration")
-model_options = ["MAML", "Reptile", "ProtoNet", "Random Forest", "PINN"]
+model_options = ["PINN", "Reptile", "ProtoNet", "Random Forest", "MAML"]
 model_type = st.sidebar.selectbox("Choose Model Type:", options=model_options, key="model_type_selector")
 
 # Model-specific configuration
