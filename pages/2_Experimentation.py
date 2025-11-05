@@ -50,7 +50,6 @@ if model_type == "MAML":
     outer_lr = st.sidebar.slider("Outer Loop LR:", 0.00001, 0.01, 0.00005)
     meta_epochs = st.sidebar.slider("Meta-Training Epochs:", 10, 300, 100)
     num_tasks = st.sidebar.slider("Number of Tasks:", 2, 10, 5)
-    curiosity = st.sidebar.slider("Curiosity:", -2.0, 2.0, 0.0, 0.1)
 
 elif model_type == "Reptile":
     st.sidebar.subheader("Reptile Configuration")
@@ -60,7 +59,6 @@ elif model_type == "Reptile":
     reptile_learning_rate = st.sidebar.slider("Learning Rate:", 0.0001, 0.1, 0.001)
     reptile_epochs = st.sidebar.slider("Training Epochs:", 10, 300, 50)
     reptile_num_tasks = st.sidebar.slider("Number of Tasks:", 2, 10, 5)
-    curiosity = st.sidebar.slider("Curiosity:", -2.0, 2.0, 0.0, 0.1)
 
 elif model_type == "ProtoNet":
     st.sidebar.subheader("ProtoNet Configuration")
@@ -72,13 +70,11 @@ elif model_type == "ProtoNet":
     protonet_num_tasks = st.sidebar.slider("Number of Tasks:", 2, 10, 5)
     num_shot = st.sidebar.slider("Support Samples (N-shot):", 1, 8, 4)
     num_query = st.sidebar.slider("Query Samples:", 1, 8, 4)
-    curiosity = st.sidebar.slider("Curiosity:", -2.0, 2.0, 0.0, 0.1)
 
 elif model_type == "Random Forest":
     st.sidebar.subheader("Random Forest Configuration")
     rf_n_estimators = st.sidebar.slider("Number of Estimators:", 50, 500, 100)
     rf_perform_grid_search = st.sidebar.checkbox("Perform GridSearchCV")
-    curiosity = st.sidebar.slider("Curiosity:", -2.0, 2.0, 0.0, 0.1)
 
 elif model_type == "PINN":
     st.sidebar.subheader("PINN Configuration")
@@ -89,10 +85,10 @@ elif model_type == "PINN":
     pinn_epochs = st.sidebar.slider("Training Epochs:", 10, 300, 50)
     pinn_batch_size = st.sidebar.slider("Batch Size:", 4, 128, 16)
     physics_loss_weight = st.sidebar.slider("Physics Loss Weight:", 0.0, 1.0, 0.1)
-    curiosity = st.sidebar.slider("Curiosity:", -2.0, 2.0, 0.0, 0.1)
 
 # --- Run Experiment ---
 st.header("Run Experiment")
+curiosity = st.slider("Curiosity:", -2.0, 2.0, 0.0, 0.1)
 button_label = "Suggest Next Experiment" if st.session_state.get("experiment_run", False) else "Run Experiment"
 
 if st.button(button_label, key="run_experiment_button", width='stretch'):
