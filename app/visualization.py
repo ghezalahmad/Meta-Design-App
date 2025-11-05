@@ -375,22 +375,17 @@ def create_parallel_coordinates(result_df, target_columns):
     # Highlight selected sample with a red line
     selected_row = plot_df[plot_df["Selected"] == "Yes"]
     if not selected_row.empty:
-        dimensions = target_columns + ["Utility", "Uncertainty", "Novelty"]
-        selected_values = []
-        
-        for dim in dimensions:
-            selected_values.append(selected_row[dim].values[0])
+        # Ensure we handle the case where multiple rows might be selected by taking the first one
+        selected_sample = selected_row.iloc[0]
 
-        fig.add_trace(
-            go.Scattergl(
-                dimensions=[
-                    dict(label=dimensions[i], values=[selected_values[i]])
-                    for i in range(len(dimensions))
-                ],
-                line=dict(color="red", width=5),
-                name="Selected Sample"
-            )
-        )
+        dimensions = target_columns + ["Utility", "Uncertainty", "Novelty"]
+        
+        fig.add_trace(go.Parcoords(
+            line=dict(color='red', width=4),
+            dimensions=[dict(range=[plot_df[dim].min(), plot_df[dim].max()],
+                             label=dim,
+                             values=[selected_sample[dim]]) for dim in dimensions]
+        ))
     
     return fig
 
