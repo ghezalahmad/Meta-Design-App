@@ -216,7 +216,11 @@ def meta_train(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list[st
     
     # Adaptive loss function based on dataset size
     # Extract labeled data
-    labeled_data = data.dropna(subset=target_columns).sample(frac=1).reset_index(drop=True)
+    labeled_data = data.dropna(subset=target_columns).copy()
+
+    # Sort data by the first target variable to create more structured tasks
+    if not labeled_data.empty and len(target_columns) > 0:
+        labeled_data = labeled_data.sort_values(by=target_columns[0]).reset_index(drop=True)
 
     # ✅ Ensure target columns are numeric
     for col in target_columns:
@@ -330,27 +334,22 @@ def meta_train(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list[st
         if epoch > epochs // 2:
             inner_loop_steps = max(inner_loop_steps, 3)  # Increase steps in later epochs
         
-        # Use K-fold for task creation in small datasets
+        # New task creation: Sliding window over sorted data
         task_indices = []
-        for train_idx, val_idx in kf.split(inputs):
-            if len(train_idx) >= min_samples_per_task and len(val_idx) >= 2:
-                task_indices.append((train_idx, val_idx))
-        
-        # If K-fold doesn't provide enough tasks, create random ones
-        while len(task_indices) < num_tasks:
-            # For very small datasets, use leave-one-out approach
-            if len(inputs) <= 10:
-                train_size = max(2, len(inputs) - 2)
-                train_idx = np.random.choice(len(inputs), size=train_size, replace=False)
-                val_idx = np.setdiff1d(np.arange(len(inputs)), train_idx)
-            else:
-                # Random split with ~70% train, ~30% validation
-                split_idx = int(0.7 * len(inputs))
-                indices = torch.randperm(len(inputs))
-                train_idx = indices[:split_idx]
-                val_idx = indices[split_idx:]
+        window_size = len(inputs) // num_tasks
+        for i in range(num_tasks):
+            # Define the window for the current task
+            start_idx = i * window_size
+            end_idx = start_idx + window_size
             
-            task_indices.append((train_idx, val_idx))
+            # The validation set is the current window
+            val_idx = np.arange(start_idx, end_idx)
+
+            # The training set is everything outside the window
+            train_idx = np.setdiff1d(np.arange(len(inputs)), val_idx)
+
+            if len(train_idx) >= min_samples_per_task and len(val_idx) >= 1:
+                task_indices.append((train_idx, val_idx))
         
         # Process each task
         for task_idx, (support_indices, query_indices) in enumerate(task_indices[:num_tasks]):
@@ -640,8 +639,11 @@ def evaluate_maml(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list
         )
 
         predictions = scaler_targets.inverse_transform(predictions_scaled)
-        # Ensure predictions are non-negative, aligning with expected output characteristics.
-        predictions = np.maximum(predictions, 0)
+
+        # New safeguard: Clamp predictions to a reasonable range based on training data
+        min_target_val = labeled_data[target_columns].min().values
+        max_target_val = labeled_data[target_columns].max().values
+        predictions = np.clip(predictions, min_target_val, max_target_val * 1.5) # Allow 50% extrapolation
 
         result_df = unlabeled_data.copy()
         for i, col in enumerate(target_columns):

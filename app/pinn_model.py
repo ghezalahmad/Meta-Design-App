@@ -38,7 +38,8 @@ class PINNModel(nn.Module):
 
         # Handle both DataFrame and numpy array inputs
         if isinstance(X_input, pd.DataFrame):
-            X_processed = X_input[input_columns].values
+            # Ensure the column order matches the order used to fit the scaler
+            X_processed = X_input[self.scaler_x.feature_names_in_].values
         else:  # Assumes numpy array
             X_processed = X_input
 
