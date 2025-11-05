@@ -121,18 +121,17 @@ if st.button(button_label, key="run_experiment_button", use_container_width=True
             result_df = evaluate_reptile(model, data, input_columns, target_columns, curiosity, weights_targets, max_or_min_targets)
 
         elif model_type == "ProtoNet":
-            model = ProtoNetModel(input_size=len(input_columns), embedding_size=embedding_size, num_layers=num_layers, dropout_rate=dropout_rate)
+            model = ProtoNetModel(input_size=len(input_columns), output_size=len(target_columns), embedding_size=embedding_size, num_layers=num_layers, dropout_rate=dropout_rate)
             model, _, _ = protonet_train(model, data, input_columns, target_columns, protonet_epochs, protonet_learning_rate, protonet_num_tasks, num_shot, num_query)
             result_df = evaluate_protonet(model, data, input_columns, target_columns, num_shot, curiosity, weights_targets, max_or_min_targets)
 
         elif model_type == "Random Forest":
-            model = RFModel(n_estimators=rf_n_estimators)
-            model, _ = train_rf_model(model, data, input_columns, target_columns, rf_perform_grid_search)
+            model, _, _ = train_rf_model(data, input_columns, target_columns, n_estimators=rf_n_estimators, perform_grid_search=rf_perform_grid_search)
             result_df = evaluate_rf_model(model, data, input_columns, target_columns, curiosity, weights_targets, max_or_min_targets)
 
         elif model_type == "PINN":
             model = PINNModel(input_size=len(input_columns), output_size=len(target_columns), hidden_size=hidden_size, num_layers=num_layers, dropout_rate=dropout_rate)
-            model, _, _ = pinn_train(model, data, input_columns, target_columns, pinn_epochs, pinn_learning_rate, pinn_batch_size, physics_loss_weight)
+            model, _, _ = pinn_train(model, data, input_columns, target_columns, pinn_epochs, pinn_learning_rate, physics_loss_weight, pinn_batch_size)
             result_df = evaluate_pinn(model, data, input_columns, target_columns, curiosity, weights_targets, max_or_min_targets)
 
         st.session_state.model = model
