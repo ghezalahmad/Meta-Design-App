@@ -160,7 +160,7 @@ class BayesianOptimizer:
             st.info(f"BayesianOptimizer using provided pre-trained surrogate: {type(self.surrogate_model).__name__}")
 
         elif self.gp: # Use internal GP
-            self.gp.fit(X_valid, y_valid) # y_valid is original scale here if normalize_y=False for GP
+            self.gp.fit(X_valid_np, y_valid) # y_valid is original scale here if normalize_y=False for GP
                                        # if normalize_y=True, GP handles it.
             self.is_fitted = True
             st.info(f"Fitted internal GP model with kernel: {self.gp.kernel_}")
@@ -617,116 +617,29 @@ class BayesianOptimizer:
         return qUCB_value
 
 
-def bayesian_optimization(train_inputs, train_targets, candidate_inputs, curiosity=0.0, 
-                         acquisition="UCB", n_calls=50, min_distance=0.1, normalize=True):
+def _identify_pareto_front(predictions, max_or_min):
     """
-    Perform Bayesian optimization to select the next best sample for testing.
-    
-    Parameters:
-    -----------
-    train_inputs : numpy.ndarray
-        Input features of labeled samples
-    train_targets : numpy.ndarray
-        Target values of labeled samples
-    candidate_inputs : numpy.ndarray
-        Input features of candidate samples
-    curiosity : float
-        Exploration vs exploitation parameter (-2 to +2)
-    acquisition : str
-        Acquisition function type: "UCB", "EI", "PI", or "MaxEntropy"
-    n_calls : int
-        Number of optimization iterations
-    min_distance : float
-        Minimum distance between selected samples
-    normalize : bool
-        Whether to normalize inputs and targets
-        
-    Returns:
-    --------
-    best_sample_idx : int
-        Index of the best candidate sample
+    Identifies the Pareto front from a set of predictions.
     """
-    # Handle NaN/Inf values in targets
-    train_targets = np.array(train_targets).reshape(-1, 1)
-    valid_indices = np.isfinite(train_targets).all(axis=1)
-    train_targets = train_targets[valid_indices]
-    train_inputs = train_inputs[valid_indices]
-    
-    if len(train_inputs) == 0:
-        st.warning("No valid training data. Selecting a random sample.")
-        return np.random.randint(len(candidate_inputs))
-    
-    # Normalize the data
-    if normalize:
-        input_mean = np.mean(train_inputs, axis=0)
-        input_std = np.std(train_inputs, axis=0) + 1e-8
-        
-        target_mean = np.mean(train_targets, axis=0)
-        target_std = np.std(train_targets, axis=0) + 1e-8
-        
-        train_inputs_norm = (train_inputs - input_mean) / input_std
-        train_targets_norm = (train_targets - target_mean) / target_std
-        
-        candidate_inputs_norm = (candidate_inputs - input_mean) / input_std
-    else:
-        train_inputs_norm = train_inputs
-        train_targets_norm = train_targets
-        candidate_inputs_norm = candidate_inputs
-    
-    # Select kernel based on data size
-    if len(train_inputs) < 10:
-        # For very small datasets, use a simpler RBF kernel
-        kernel = ConstantKernel(1.0) * RBF(length_scale=1.0) + WhiteKernel(noise_level=0.1)
-    else:
-        # For larger datasets, use Matern kernel which is better for physical processes
-        kernel = ConstantKernel(1.0) * Matern(length_scale=1.0, nu=2.5) + WhiteKernel(noise_level=0.1)
-    
-    # Initialize and fit Bayesian optimizer
-    optimizer = BayesianOptimizer(kernel=kernel)
-    optimizer.fit(train_inputs_norm, train_targets_norm)
-    
-    # Compute acquisition function values for all candidates
-    acq_values = optimizer.acquisition_function(
-        candidate_inputs_norm, 
-        acquisition=acquisition, 
-        curiosity=curiosity
-    )
-    
-    # Calculate novelty scores
-    novelty_scores = calculate_novelty(candidate_inputs_norm, train_inputs_norm)
-    
-    # Adjust acquisition values with novelty if curiosity is positive
-    if curiosity > 0:
-        acq_values = acq_values.flatten() + 0.2 * curiosity * novelty_scores
-    
-    # Sort candidates by acquisition value
-    sorted_indices = np.argsort(-acq_values)
-    
-    # Get the best candidate index
-    best_candidates = sorted_indices[:min(10, len(sorted_indices))]
-    
-    # Enforce diversity with previously selected samples
-    diverse_candidates = enforce_diversity(
-        candidate_inputs_norm[best_candidates], 
-        train_inputs_norm, 
-        min_distance
-    )
-    
-    if len(diverse_candidates) > 0:
-        # Find index of the most diverse candidate among top candidates
-        for i, candidate_idx in enumerate(best_candidates):
-            if any(np.allclose(candidate_inputs_norm[candidate_idx], diverse_candidate) 
-                  for diverse_candidate in diverse_candidates):
-                best_sample_idx = candidate_idx
+    n_points = predictions.shape[0]
+    is_pareto = np.ones(n_points, dtype=bool)
+    for i in range(n_points):
+        for j in range(n_points):
+            if i == j:
+                continue
+
+            dominates = all(
+                (predictions[j, k] >= predictions[i, k] if mom == 'max' else predictions[j, k] <= predictions[i, k])
+                for k, mom in enumerate(max_or_min)
+            ) and any(
+                (predictions[j, k] > predictions[i, k] if mom == 'max' else predictions[j, k] < predictions[i, k])
+                for k, mom in enumerate(max_or_min)
+            )
+
+            if dominates:
+                is_pareto[i] = False
                 break
-        else:
-            # If no match found, use the best candidate
-            best_sample_idx = best_candidates[0]
-    else:
-        # If no diverse candidates, use the best candidate
-        best_sample_idx = best_candidates[0]
-    
-    return best_sample_idx
+    return np.where(is_pareto)[0]
 
 
 def multi_objective_bayesian_optimization(
@@ -784,25 +697,23 @@ def multi_objective_bayesian_optimization(
         weights = np.array([1.0])
         max_or_min = ["max"]
     
+    n_objectives_from_targets = train_targets.shape[1]
+
     # Filter out invalid targets
     valid_indices = np.isfinite(train_targets).all(axis=1)
     train_targets = train_targets[valid_indices]
-    train_inputs = train_inputs[valid_indices]
     
+    # Handle train_inputs being a DataFrame or numpy array
+    if isinstance(train_inputs, pd.DataFrame):
+        train_inputs = train_inputs.iloc[valid_indices]
+    else:
+        train_inputs = train_inputs[valid_indices]
+
     if len(train_inputs) == 0:
-        st.warning("No valid training data. Selecting a random sample.")
-        return np.random.randint(len(candidate_inputs))
-    
-    # Normalize inputs
-    input_mean = np.mean(train_inputs, axis=0)
-    input_std = np.std(train_inputs, axis=0) + 1e-8
-    
-    train_inputs_norm = (train_inputs - input_mean) / input_std
-    candidate_inputs_norm = (candidate_inputs - input_mean) / input_std
+        st.warning("No valid training data. Returning random scores.")
+        return np.random.rand(len(candidate_inputs))
     
     # --- Helper functions for acquisition calculations (defined at module level or accessible scope) ---
-    # _calculate_ucb, _calculate_ei, _calculate_pi
-    # For this diff, assume they are defined above this function in the same file.
 
     # Determine effective weights for scalarization
     if strategy == "parego":
@@ -811,67 +722,44 @@ def multi_objective_bayesian_optimization(
             effective_weights = random_w
             st.info(f"ParEGO strategy: using random weights: {np.round(effective_weights, 3)}")
         else:
-            effective_weights = np.array([1.0]) # Fallback, though n_objectives should be >0
+            effective_weights = np.array([1.0]) # Fallback
+    elif strategy == "pareto":
+        effective_weights = None # Weights are not used in this strategy
     else: # 'weighted_sum' or default
-        effective_weights = weights / np.sum(weights) # Normalize user weights if not already
+        effective_weights = weights / np.sum(weights) if np.sum(weights) > 0 else np.ones(len(weights)) / len(weights)
 
-    # Prepare candidate inputs (ensure DataFrame if surrogate_model expects it)
+    # Prepare candidate inputs
     if isinstance(candidate_inputs, np.ndarray) and input_columns:
         candidate_inputs_df = pd.DataFrame(candidate_inputs, columns=input_columns)
     elif isinstance(candidate_inputs, pd.DataFrame):
         candidate_inputs_df = candidate_inputs
-    else: # Should not happen if input_columns logic is correct
-        raise ValueError("candidate_inputs format issue or missing input_columns for DataFrame conversion.")
+    else:
+        raise ValueError("candidate_inputs format issue or missing input_columns.")
 
     num_candidates = len(candidate_inputs_df)
     acq_values_total = np.zeros(num_candidates)
 
-    # Normalize train_inputs (for internal GP path)
-    # This normalization is only for the internal GP path.
-    # Surrogates are expected to handle their own scaling or work with original scale.
-    train_inputs_norm_for_gp = None
-    if surrogate_model is None:
-        if isinstance(train_inputs, pd.DataFrame):
-            train_inputs_np_for_gp = train_inputs.values
-        else:
-            train_inputs_np_for_gp = train_inputs
-        
-        input_mean_for_gp = np.mean(train_inputs_np_for_gp, axis=0)
-        input_std_for_gp = np.std(train_inputs_np_for_gp, axis=0) + 1e-8
-        train_inputs_norm_for_gp = (train_inputs_np_for_gp - input_mean_for_gp) / input_std_for_gp
-        
-        if isinstance(candidate_inputs_df, pd.DataFrame):
-            candidate_inputs_norm_for_gp = (candidate_inputs_df.values - input_mean_for_gp) / input_std_for_gp
-        else: # Should be DataFrame by now
-            candidate_inputs_norm_for_gp = (candidate_inputs_df - input_mean_for_gp) / input_std_for_gp
-
-
     if surrogate_model:
-        # Use the provided pre-trained multi-output surrogate model
         if not getattr(surrogate_model, 'is_trained', True):
              raise ValueError("Provided surrogate_model is not trained.")
 
-        # predict_with_uncertainty should return means and std_devs for ALL targets
-        # in their original scale.
         all_mu_orig, all_sigma_orig = surrogate_model.predict_with_uncertainty(
             candidate_inputs_df,
-            input_columns=input_columns # Pass input_columns if surrogate expects it
+            input_columns=input_columns
         )
 
         if all_mu_orig.ndim == 1: all_mu_orig = all_mu_orig.reshape(-1, 1)
         if all_sigma_orig.ndim == 1: all_sigma_orig = all_sigma_orig.reshape(-1, 1)
 
         if all_mu_orig.shape[1] != n_objectives_from_targets or \
-           (all_sigma_orig.shape[1] != n_objectives_from_targets and all_sigma_orig.shape[1] != 1): # allow single shared sigma
+           (all_sigma_orig.shape[1] != n_objectives_from_targets and all_sigma_orig.shape[1] != 1):
             raise ValueError(f"Surrogate model prediction shape mismatch. Expected {n_objectives_from_targets} targets. Got means: {all_mu_orig.shape}, sigmas: {all_sigma_orig.shape}")
 
         for i in range(n_objectives_from_targets):
             mu_obj = all_mu_orig[:, i]
             sigma_obj = all_sigma_orig[:, i] if all_sigma_orig.shape[1] == n_objectives_from_targets else all_sigma_orig.ravel()
-
             y_train_obj_orig = train_targets[:, i]
             y_max_obj_orig = np.max(y_train_obj_orig[np.isfinite(y_train_obj_orig)]) if np.any(np.isfinite(y_train_obj_orig)) else 0.0
-            # For minimization, one might use y_min_obj_orig = np.min(...)
 
             kappa_adjusted = 2.0 * (1.0 + 0.5 * curiosity)
             xi_adjusted = 0.01 * (1.0 + 0.5 * curiosity)
@@ -883,87 +771,68 @@ def multi_objective_bayesian_optimization(
                 acq_obj_values_i = _calculate_ei(mu_obj, sigma_obj, y_max_obj_orig, xi_adjusted)
             elif acquisition == "PI":
                 acq_obj_values_i = _calculate_pi(mu_obj, sigma_obj, y_max_obj_orig, xi_adjusted)
-            else: # Default to UCB
+            else:
                 acq_obj_values_i = _calculate_ucb(mu_obj, sigma_obj, kappa_adjusted)
 
             if max_or_min[i].lower() == "min":
-                if acquisition == "UCB": # LCB
+                if acquisition == "UCB":
                     acq_obj_values_i = mu_obj - kappa_adjusted * sigma_obj
-                else: # For EI/PI, true minimization requires transforming the problem (e.g. -y)
-                      # or using specialized forms. Simple negation of acquisition is not standard.
-                      # This path would require careful re-evaluation of y_max_obj_orig for min case.
-                    st.warning(f"Minimization with {acquisition} for objective {i} using surrogate. Ensure target was pre-transformed or acquisition logic handles minimization.")
-                    acq_obj_values_i = -acq_obj_values_i # Tentative, may not be mathematically sound for EI/PI
+                else:
+                    st.warning(f"Minimization with {acquisition} for objective {i} using surrogate. Simple negation may not be sound.")
+                    acq_obj_values_i = -acq_obj_values_i
 
             acq_values_total += effective_weights[i] * acq_obj_values_i.flatten()
 
-    else: # Fallback to fitting individual GPs per objective (existing logic adapted)
-        models = []
+    else:
+        # Fallback to fitting individual GPs per objective
+        train_inputs_np = train_inputs.values if isinstance(train_inputs, pd.DataFrame) else train_inputs
+        candidate_inputs_np = candidate_inputs_df.values
+
         for i in range(n_objectives_from_targets):
             y_obj_single = train_targets[:, i].reshape(-1, 1)
             valid_indices_obj = np.isfinite(y_obj_single.flatten())
             y_valid_obj_for_gp = y_obj_single[valid_indices_obj]
-            # Use train_inputs_norm_for_gp for fitting internal GPs
-            X_valid_obj_for_gp = train_inputs_norm_for_gp[valid_indices_obj]
+            X_valid_obj_for_gp = train_inputs_np[valid_indices_obj]
 
             if len(X_valid_obj_for_gp) == 0: continue
 
-            kernel_gp = ConstantKernel(1.0) * Matern(length_scale=1.0, nu=2.5) + WhiteKernel(noise_level=0.1) \
-                if len(X_valid_obj_for_gp) >= 10 else ConstantKernel(1.0) * RBF(length_scale=1.0) + WhiteKernel(noise_level=0.1)
-
-            # BayesianOptimizer's internal GP handles its own y-normalization if normalize_y=True
+            kernel_gp = ConstantKernel(1.0) * Matern(length_scale=1.0, nu=2.5) + WhiteKernel(noise_level=0.1)
             gp_optimizer = BayesianOptimizer(kernel=kernel_gp, normalize_y=True)
             gp_optimizer.fit(X_valid_obj_for_gp, y_valid_obj_for_gp)
-            models.append(gp_optimizer)
 
-        if not models or len(models) != n_objectives_from_targets:
-            st.warning("Failed to build models for all objectives using internal GPs. Selecting a random sample.")
-            return np.random.randint(len(candidate_inputs_df))
-
-        for i, model_i in enumerate(models):
-            # model_i is a BayesianOptimizer instance (with an internal GP)
-            # Its acquisition_function will use its own GP's normalized y_train for y_max (if normalize_y=True)
-            # It expects X in the same scale as it was trained on (i.e. train_inputs_norm_for_gp)
-            acq_obj_values_i = model_i.acquisition_function(
-                candidate_inputs_norm_for_gp, # Pass normalized candidates
+            acq_obj_values_i = gp_optimizer.acquisition_function(
+                candidate_inputs_np,
                 acquisition=acquisition,
                 curiosity=curiosity
             )
 
             if max_or_min[i].lower() == "min":
-                # The internal GP's acquisition function (UCB, EI, PI) assumes maximization.
-                # For UCB, to get LCB, we'd need mu - kappa * sigma.
-                # For EI/PI with minimization, the problem should ideally be transformed (e.g. predict -y).
-                # This path needs careful handling if min objectives and EI/PI are used with internal GPs.
                 if acquisition == "UCB":
-                     mu_norm, sigma_norm = model_i._predict_with_internal_gp(candidate_inputs_norm_for_gp, return_std=True)
-                     kappa_adjusted = 2.0 * (1.0 + 0.5 * curiosity) # Default kappa from BO class
+                     mu_norm, sigma_norm = gp_optimizer._predict_with_internal_gp(candidate_inputs_np, return_std=True)
+                     kappa_adjusted = 2.0 * (1.0 + 0.5 * curiosity)
                      acq_obj_values_i = mu_norm.ravel() - kappa_adjusted * sigma_norm.ravel()
                 else:
                     st.warning(f"Minimization with {acquisition} for objective {i} using internal GP might require target pre-transformation.")
-                    acq_obj_values_i = -acq_obj_values_i # Tentative
+                    acq_obj_values_i = -acq_obj_values_i
 
             acq_values_total += effective_weights[i] * acq_obj_values_i.flatten()
 
-    # Calculate novelty (using original scale inputs if possible, or normalized for internal GP path)
-    # The `calculate_novelty` function expects NumPy arrays.
-    novelty_eval_candidates = candidate_inputs_df.values if isinstance(candidate_inputs_df, pd.DataFrame) else candidate_inputs_df
-    novelty_train_references = None
-    if isinstance(train_inputs, pd.DataFrame):
-        novelty_train_references = train_inputs.iloc[valid_indices].values # Use filtered valid_indices from original train_inputs
-    elif isinstance(train_inputs, np.ndarray):
-        novelty_train_references = train_inputs[valid_indices]
+    if strategy == "pareto":
+        all_mu_orig, _ = surrogate_model.predict_with_uncertainty(candidate_inputs_df, input_columns=input_columns)
+        pareto_indices = _identify_pareto_front(all_mu_orig, max_or_min)
 
-    if surrogate_model is None and train_inputs_norm_for_gp is not None: # If internal GPs were used, novelty on normalized space
-        novelty_eval_candidates = candidate_inputs_norm_for_gp
-        novelty_train_references = train_inputs_norm_for_gp[valid_indices] # Ensure correct reference for novelty
+        # Create a boolean mask for Pareto points
+        is_pareto = np.zeros(num_candidates, dtype=bool)
+        is_pareto[pareto_indices] = True
 
-    novelty_scores = calculate_novelty(novelty_eval_candidates, novelty_train_references)
+        # Assign high acquisition value to Pareto points, low to others
+        acq_values_total = np.where(is_pareto, 1.0, 0.0)
+
+    # Calculate novelty
+    novelty_train_references = train_inputs.values if isinstance(train_inputs, pd.DataFrame) else train_inputs
+    novelty_scores = calculate_novelty(candidate_inputs_df.values, novelty_train_references)
     
-    # Adjust with novelty if curiosity is positive
     if curiosity > 0:
         acq_values_total += 0.2 * curiosity * novelty_scores
     
-    # Return all acquisition scores instead of just the index of the best
-    # The calling function (in main.py) will handle selecting the best and populating result_df.
     return acq_values_total.flatten()
