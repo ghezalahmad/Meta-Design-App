@@ -12,3 +12,4 @@ streamlit-aggrid
 pytest
 pytest-cov
 playwright
+lolopy

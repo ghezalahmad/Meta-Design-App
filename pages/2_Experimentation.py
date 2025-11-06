@@ -9,6 +9,7 @@ from app.reptile_model import ReptileModel, reptile_train, evaluate_reptile
 from app.protonet_model import ProtoNetModel, protonet_train, evaluate_protonet
 from app.rf_model import RFModel, train_rf_model, evaluate_rf_model
 from app.pinn_model import PINNModel, pinn_train, evaluate_pinn
+from app.lolopy_model import train_lolopy_model, evaluate_lolopy_model
 from app.ensemble import weighted_uncertainty_ensemble
 from app.bayesian_optimizer import multi_objective_bayesian_optimization, BayesianOptimizer
 from app.visualization import (
@@ -37,7 +38,7 @@ if "dataset" not in st.session_state or st.session_state.dataset is None:
 
 # --- Sidebar for Model Configuration ---
 st.sidebar.header("Model & Data Configuration")
-model_options = ["MAML", "Reptile", "ProtoNet", "Random Forest", "PINN"]
+model_options = ["MAML", "Reptile", "ProtoNet", "Random Forest", "PINN", "Lolopy Random Forest"]
 model_type = st.sidebar.selectbox("Choose Model Type:", options=model_options, key="model_type_selector")
 
 # Model-specific configuration
@@ -86,6 +87,10 @@ elif model_type == "PINN":
     pinn_batch_size = st.sidebar.slider("Batch Size:", 4, 128, 16)
     physics_loss_weight = st.sidebar.slider("Physics Loss Weight:", 0.0, 1.0, 0.1)
 
+elif model_type == "Lolopy Random Forest":
+    st.sidebar.subheader("Lolopy Random Forest Configuration")
+    lolopy_n_estimators = st.sidebar.slider("Number of Estimators:", 50, 500, 100)
+
 # --- Run Experiment ---
 st.header("Run Experiment")
 curiosity = st.slider("Curiosity:", -2.0, 2.0, 0.0, 0.1)
@@ -129,6 +134,10 @@ if st.button(button_label, key="run_experiment_button", width='stretch'):
             model = PINNModel(input_size=len(input_columns), output_size=len(target_columns), hidden_size=hidden_size, num_layers=num_layers, dropout_rate=dropout_rate)
             model, _, _ = pinn_train(model, data, input_columns, target_columns, pinn_epochs, pinn_learning_rate, physics_loss_weight, pinn_batch_size)
             result_df = evaluate_pinn(model, data, input_columns, target_columns, curiosity, weights_targets, max_or_min_targets)
+
+        elif model_type == "Lolopy Random Forest":
+            model, _, _ = train_lolopy_model(data, input_columns, target_columns, n_estimators=lolopy_n_estimators)
+            result_df = evaluate_lolopy_model(model, data, input_columns, target_columns, curiosity, weights_targets, max_or_min_targets)
 
         st.session_state.model = model
         st.session_state.result_df = result_df
