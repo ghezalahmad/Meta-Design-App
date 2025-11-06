@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from lolopy.learners import RandomForestRegressor
 import streamlit as st
-from app.utils import calculate_utility_and_select
+from app.utils import calculate_utility
 
 class LolopyRFModel:
     """A wrapper class for the lolopy RandomForestRegressor to maintain a consistent interface."""
@@ -55,7 +55,7 @@ def evaluate_lolopy_model(model, data, input_columns, target_columns, curiosity,
         candidate_df[f"Uncertainty ({col})"] = uncertainties[:, i]
 
     # Calculate utility and other metrics
-    result_df = calculate_utility_and_select(
+    result_df = calculate_utility(
         candidate_df,
         target_columns,
         weights_targets,
