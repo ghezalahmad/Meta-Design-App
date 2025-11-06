@@ -276,7 +276,8 @@ def create_tsne_plot_with_hover(df, input_columns, utility_column='Utility', lab
 
     # Ensure consistent ordering
     tsne_df = tsne_df.sort_values(by=utility_column, ascending=False)
-    tsne_df.insert(loc=0, column='Row number', value=list(range(1, len(tsne_df) + 1)))
+    if 'Row number' not in tsne_df.columns:
+        tsne_df.insert(loc=0, column='Row number', value=list(range(1, len(tsne_df) + 1)))
 
     # Run t-SNE with fixed params to match SLAMD
     tsne = TSNE(n_components=2, verbose=0, perplexity=min(20, len(features) - 1),
