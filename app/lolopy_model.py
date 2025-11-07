@@ -26,8 +26,9 @@ def train_lolopy_model(data: pd.DataFrame, input_columns: list, target_columns: 
     """Trains a lolopy RandomForestRegressor model."""
     train_df = data.dropna(subset=target_columns)
     X_train = train_df[input_columns].values
-    # Ensure y_train is a 1D array if there's only one target, as expected by lolopy
-    y_train = train_df[target_columns].values.squeeze()
+    y_train = train_df[target_columns].values
+    if y_train.shape[1] == 1:
+        y_train = y_train.ravel()
 
     model_wrapper = LolopyRFModel(num_trees=n_estimators)
 
