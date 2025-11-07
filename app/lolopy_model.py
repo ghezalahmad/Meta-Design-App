@@ -54,12 +54,23 @@ def evaluate_lolopy_model(model, data, input_columns, target_columns, curiosity,
         candidate_df[col] = predictions[:, i]
         candidate_df[f"Uncertainty ({col})"] = uncertainties[:, i]
 
+    # Extract predictions and uncertainties for the utility calculation
+    predictions_for_utility = candidate_df[target_columns].values
+    uncertainties_for_utility = candidate_df[[f"Uncertainty ({col})" for col in target_columns]].values
+
     # Calculate utility and other metrics
-    result_df = calculate_utility(
-        candidate_df,
-        target_columns,
-        weights_targets,
-        max_or_min_targets,
-        curiosity
+    utility_scores = calculate_utility(
+        predictions=predictions_for_utility,
+        uncertainties=uncertainties_for_utility,
+        novelty=None,  # Lolopy model does not produce a novelty score
+        curiosity=curiosity,
+        weights=weights_targets,
+        max_or_min=max_or_min_targets
     )
+
+    candidate_df["Utility"] = utility_scores
+
+    # Sort by utility score to find the best candidates
+    result_df = candidate_df.sort_values(by="Utility", ascending=False).reset_index(drop=True)
+
     return result_df
