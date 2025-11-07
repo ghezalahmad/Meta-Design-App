@@ -26,7 +26,8 @@ def train_lolopy_model(data: pd.DataFrame, input_columns: list, target_columns: 
     """Trains a lolopy RandomForestRegressor model."""
     train_df = data.dropna(subset=target_columns)
     X_train = train_df[input_columns].values
-    y_train = train_df[target_columns].values
+    # Ensure y_train is a 1D array if there's only one target, as expected by lolopy
+    y_train = train_df[target_columns].values.squeeze()
 
     model_wrapper = LolopyRFModel(num_trees=n_estimators)
 
@@ -69,6 +70,15 @@ def evaluate_lolopy_model(model, data, input_columns, target_columns, curiosity,
     )
 
     candidate_df["Utility"] = utility_scores
+
+    # Add other required columns for consistency with visualization components
+    candidate_df["Uncertainty"] = np.mean(uncertainties_for_utility, axis=1)
+    candidate_df["Novelty"] = 0  # Lolopy doesn't have a novelty metric
+    candidate_df["Exploration"] = candidate_df["Uncertainty"] * (1 + max(0, curiosity))
+    candidate_df["Exploitation"] = utility_scores - candidate_df["Exploration"]
+    candidate_df["Selected for Testing"] = False
+    if not candidate_df.empty:
+        candidate_df.loc[candidate_df["Utility"].idxmax(), "Selected for Testing"] = True
 
     # Sort by utility score to find the best candidates
     result_df = candidate_df.sort_values(by="Utility", ascending=False).reset_index(drop=True)
