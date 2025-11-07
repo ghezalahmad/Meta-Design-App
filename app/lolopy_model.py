@@ -7,8 +7,8 @@ from app.utils import calculate_utility
 
 class LolopyRFModel:
     """A wrapper class for the lolopy RandomForestRegressor to maintain a consistent interface."""
-    def __init__(self, n_estimators=100):
-        self.model = RandomForestRegressor(n_estimators=n_estimators, random_state=42)
+    def __init__(self, num_trees=100):
+        self.model = RandomForestRegressor(num_trees=num_trees)
         self.is_trained = False
 
     def train(self, X, y):
@@ -28,7 +28,7 @@ def train_lolopy_model(data: pd.DataFrame, input_columns: list, target_columns: 
     X_train = train_df[input_columns].values
     y_train = train_df[target_columns].values
 
-    model_wrapper = LolopyRFModel(n_estimators=n_estimators)
+    model_wrapper = LolopyRFModel(num_trees=n_estimators)
 
     with st.spinner("Training Lolopy Random Forest model..."):
         model_wrapper.train(X_train, y_train)
