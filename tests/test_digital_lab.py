@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 # Directly import the pure logic function
-from app.digital_lab import generate_design_space
+from app.utils.digital_lab import generate_design_space
 
 @pytest.fixture
 def sample_components():
