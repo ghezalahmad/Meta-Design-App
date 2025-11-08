@@ -331,8 +331,8 @@ def evaluate_reptile(model, data, input_columns, target_columns, curiosity, weig
     invalid_rows = np.any(predictions < min_strength_threshold, axis=1)
     
     # Calculate novelty
-    labeled_inputs = scaler_inputs.transform(labeled_data[input_columns])
-    novelty_scores = calculate_novelty(inputs_infer, labeled_inputs)
+    X_labeled_scaled = scaler_inputs.transform(labeled_data[input_columns])
+    novelty_scores = calculate_novelty(inputs_infer, X_labeled_scaled)
     
     # Ensure weights and max_or_min are properly formatted
     if not isinstance(weights, np.ndarray):

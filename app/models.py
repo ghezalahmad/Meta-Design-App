@@ -650,8 +650,8 @@ def evaluate_maml(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list
             result_df[col] = predictions[:, i]
 
     # Novelty calculation
-    X_labeled = labeled_data[input_columns].values
-    novelty_scores = calculate_novelty(inputs_infer, RobustScaler().fit_transform(X_labeled))
+    X_labeled_scaled = scaler_inputs.transform(labeled_data[input_columns])
+    novelty_scores = calculate_novelty(inputs_infer, X_labeled_scaled)
 
     if acquisition is None:
         acquisition = select_acquisition_function(curiosity, len(labeled_data))

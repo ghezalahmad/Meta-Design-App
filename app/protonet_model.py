@@ -622,7 +622,8 @@ def evaluate_protonet(model, data, input_columns, target_columns, curiosity, wei
 
     
     # Calculate novelty
-    novelty_scores = calculate_novelty(inputs_infer, scaler_inputs.transform(labeled_data[input_columns]))
+    X_labeled_scaled = scaler_inputs.transform(labeled_data[input_columns])
+    novelty_scores = calculate_novelty(inputs_infer, X_labeled_scaled)
     
     # Ensure weights and max_or_min are properly formatted
     if not isinstance(weights, np.ndarray):
