@@ -49,4 +49,3 @@ st.markdown("Navigate to the **Data Setup** page from the sidebar to begin your 
 if st.button("Go to Data Setup"):
     st.switch_page("pages/1_Data_Setup.py")
 
-st.info("This application is a demonstration of the concepts presented in the SLAMD project.")
