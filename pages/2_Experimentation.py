@@ -151,7 +151,9 @@ if st.session_state.get("experiment_run", False):
         result_df["Row number"] = result_df.index
         st.header("Experiment Summary & Analysis 📊")
         st.markdown("#### Full Suggested Samples:")
-        st.dataframe(result_df, width='stretch')
+        # Display a cleaner version of the DataFrame, excluding Exploration and Exploitation
+        display_df = result_df.drop(columns=['Exploration', 'Exploitation'], errors='ignore')
+        st.dataframe(display_df, width='stretch')
 
         target_columns = st.session_state.get("target_columns", [])
         input_columns = st.session_state.get("input_columns", [])
