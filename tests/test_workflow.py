@@ -7,8 +7,8 @@ from unittest.mock import patch
 from unittest.mock import MagicMock
 st_mock = MagicMock()
 with patch.dict('sys.modules', {'streamlit': st_mock}):
-    from app.models import MAMLModel, evaluate_maml
-    from app.utils import calculate_utility
+    from app.models.models import MAMLModel, evaluate_maml
+    from app.utils.utils import calculate_utility
 
 @pytest.fixture
 def sample_dataset():

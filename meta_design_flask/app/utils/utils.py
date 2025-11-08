@@ -4,22 +4,10 @@ import random
 import torch
 import torch.optim as optim
 from scipy.stats import norm
-import streamlit as st
 
 # Force deterministic behavior in PyTorch
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
-
-# Set random seed for reproducibility
-def set_seed(seed):
-    """
-    Set random seed for all random number generators to ensure reproducibility.
-    """
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
 
 def calculate_utility(predictions: np.ndarray, uncertainties: np.ndarray | None, novelty: np.ndarray | None,
                       curiosity: float, weights: np.ndarray, max_or_min: list[str],
@@ -52,7 +40,6 @@ def calculate_utility(predictions: np.ndarray, uncertainties: np.ndarray | None,
     """
     valid_acquisitions = ["UCB", "PI", "MaxEntropy", "EI"]
     if acquisition not in valid_acquisitions:
-        st.warning(f"Invalid acquisition function '{acquisition}'. Defaulting to 'UCB'.")
         acquisition = "UCB"
     
     predictions = np.array(predictions)
@@ -325,12 +312,10 @@ def enforce_diversity(candidate_inputs, selected_inputs, min_distance=0.1):
             reduced_threshold = min_distance * reduction
             diverse_indices = np.where(np.min(distances, axis=1) > reduced_threshold)[0]
             if len(diverse_indices) > 0:
-                st.info(f"Reduced diversity threshold to {reduced_threshold:.4f} to find diverse candidates")
                 break
     
     # If still no diverse candidates, return the most distant candidates
     if len(diverse_indices) == 0:
-        st.warning("No sufficiently diverse candidates found. Selecting based on maximum distance.")
         max_min_distance_idx = np.argmax(np.min(distances, axis=1))
         return candidate_inputs[np.array([max_min_distance_idx])]
     
@@ -528,4 +513,3 @@ def select_acquisition_function(curiosity: float, num_labeled_samples: int) -> s
             return "UCB"         # Balanced
     else:
         return "PI" if curiosity > 1.0 else "UCB"
-
