@@ -1,6 +1,6 @@
 import pytest
 import numpy as np
-from app.utils.utils import calculate_utility
+from app.utils import calculate_utility
 
 def test_calculate_utility_basic():
     """

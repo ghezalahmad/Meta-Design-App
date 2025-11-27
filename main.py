@@ -1,51 +1,32 @@
-
 import streamlit as st
 
 st.set_page_config(
-    page_title="Meta-Design Dashboard",
-    page_icon="🔬",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="MetaDesign Home",
+    page_icon="🏠",
+    layout="wide"
 )
 
-# --- Hero Section ---
-st.title("Welcome to the Meta-Design Dashboard 🔬")
-st.markdown("""
-    **Accelerate your materials discovery with the power of AI.**
+st.title("Welcome to the MetaDesign Dashboard! 🏠")
 
-    This dashboard provides a comprehensive suite of tools to move from initial data to optimized material formulations.
-    Leverage state-of-the-art meta-learning models, physics-informed neural networks, and advanced Bayesian optimization
-    to discover novel materials with unprecedented efficiency.
+st.markdown("""
+    This application is your advanced toolkit for accelerating materials discovery using meta-learning and AI-driven experimentation.
+
+    Whether you're exploring new compositions or optimizing for specific properties, MetaDesign guides you to the most promising candidates with fewer experiments, saving time and resources.
 """)
 
+st.subheader("How to Get Started:")
+st.markdown("""
+    1.  **Data Setup:** Navigate to the `1_Data_Setup` page from the sidebar to either upload your existing dataset or create a new design space from scratch using the Digital Lab.
+    2.  **Experimentation:** On the `2_Experimentation` page, configure your model, set optimization goals, and run the AI to get suggestions for the next best experiment.
+    3.  **Results Analysis:** Once an experiment is complete, visit the `3_Results_Analysis` page to dive deep into the results, visualize the data, and understand the model's suggestions.
+""")
+
+st.info("Use the sidebar on the left to navigate between pages. Your data and experiment state will be preserved as you move through the workflow.")
+
+# Add footer
 st.markdown("---")
-
-# --- Key Features Section ---
-st.header("Key Features")
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("🤖 Advanced AI Models")
-    st.markdown("""
-    - **Meta-Learning:** Utilize MAML and Reptile to adapt quickly from limited experimental data.
-    - **Physics-Informed AI:** Incorporate physical laws into your models with PINNs for more realistic predictions.
-    - **Bayesian Optimization:** Intelligently search the design space to find optimal solutions faster.
-    """)
-
-with col2:
-    st.subheader("📈 Streamlined Workflow")
-    st.markdown("""
-    - **Digital Lab:** Automatically generate vast design spaces and material formulations.
-    - **Interactive Analysis:** Visualize results, explore trade-offs, and gain insights from your data.
-    - **Closed-Loop Learning:** Log new experimental findings to continuously improve the AI's suggestions.
-    """)
-
-st.markdown("---")
-
-# --- Getting Started Section ---
-st.header("Get Started")
-st.markdown("Navigate to the **Data Setup** page from the sidebar to begin your discovery journey.")
-
-if st.button("Go to Data Setup"):
-    st.switch_page("pages/1_Data_Setup.py")
-
+st.markdown("""
+    <div style="text-align: center;">
+        <p>MetaDesign Dashboard - Advanced Meta-Learning for Materials Discovery</p>
+    </div>
+""", unsafe_allow_html=True)

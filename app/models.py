@@ -6,10 +6,12 @@ import torch.optim as optim
 from sklearn.preprocessing import RobustScaler
 from sklearn.model_selection import KFold
 from scipy.stats import norm
+import streamlit as st
+import pandas as pd
 import pandas as pd
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import Matern, RBF, WhiteKernel
-from app.utils.utils import calculate_utility, calculate_novelty, select_acquisition_function
+from app.utils import calculate_utility, calculate_novelty, select_acquisition_function
 
 class MAMLModel(nn.Module):
     def __init__(self, input_size, output_size, hidden_size=128, num_layers=3, dropout_rate=0.3):
@@ -152,7 +154,7 @@ class MAMLModel(nn.Module):
         elif variance_scaled_per_sample.shape[1] == len(scale_sq): # Per-target variance
              variance_original_scale = variance_scaled_per_sample * scale_sq
         else: # Mismatch, fallback to mean scale or error
-            print("Mismatch in uncertainty and target scaler dimensions. Using mean scale for uncertainty.")
+            st.warning("Mismatch in uncertainty and target scaler dimensions. Using mean scale for uncertainty.")
             mean_scale_sq = np.mean(scale_sq) if len(scale_sq) > 0 else 1.0
             variance_original_scale = variance_scaled_per_sample * mean_scale_sq
 
@@ -229,13 +231,13 @@ def meta_train(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list[st
     
     # Check if we have enough labeled data
     if labeled_data.empty:
-        print("⚠️ No labeled data available for training.")
+        st.error("⚠️ No labeled data available for training.")
         return meta_model, None, None
     
     # ✅✅ NEW - Enhanced handling for extremely small datasets
     MINIMUM_DATA_POINTS = 8
-    if len(labeled_data) > 0 and len(labeled_data) < MINIMUM_DATA_POINTS:
-        print(f"🔄 Few labeled samples ({len(labeled_data)}). Applying data tiling for more robust evaluation.")
+    if len(labeled_data) > 0 and len(labeled_data) < MINIMUM_DATA_POINTS and not use_fallback:
+        st.warning(f"🔄 Few labeled samples ({len(labeled_data)}). Applying data tiling for more robust evaluation.")
         tile_factor = int(np.ceil(MINIMUM_DATA_POINTS / len(labeled_data)))
         labeled_data_eval = pd.concat([labeled_data] * tile_factor, ignore_index=True)
         
@@ -251,7 +253,7 @@ def meta_train(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list[st
                 labeled_data_eval[col] += noise
 
             
-        print(f"✅ Data tiled from {len(labeled_data)} to {len(labeled_data_eval)} samples.")
+        st.info(f"✅ Data tiled from {len(labeled_data)} to {len(labeled_data_eval)} samples.")
         labeled_data = labeled_data_eval  # 🔄 Apply tiling + noise
 
       
@@ -260,15 +262,15 @@ def meta_train(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list[st
     if len(labeled_data) < 10:
         # For very small datasets, use MSE which is more stable
         loss_function = nn.MSELoss()
-        print("Using MSE loss for small dataset stability")
+        st.info("Using MSE loss for small dataset stability")
     else:
         # For larger datasets, use Huber loss for robustness to outliers
         loss_function = nn.SmoothL1Loss()
-        print("Using Huber loss for robustness to outliers")
+        st.info("Using Huber loss for robustness to outliers")
 
     # Validate if we have enough samples for few-shot learning
     if len(labeled_data) < min_samples_per_task * 2:
-        print(f"⚠️ Limited labeled samples ({len(labeled_data)}) - using few-shot adaptations.")
+        st.warning(f"⚠️ Limited labeled samples ({len(labeled_data)}) - using few-shot adaptations.")
         # Reduce task complexity for very small datasets
         num_tasks = max(2, min(num_tasks, len(labeled_data) // 2))
     
@@ -282,7 +284,7 @@ def meta_train(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list[st
     
     # Ensure we have data to work with
     if len(inputs) == 0 or len(targets) == 0:
-        print("❌ No valid data available for training after preprocessing.")
+        st.error("❌ No valid data available for training after preprocessing.")
         return meta_model, scaler_inputs, scaler_targets
     
     # Dynamic batch size based on available data
@@ -310,13 +312,19 @@ def meta_train(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list[st
     episodic_memory = []
     episodic_memory_size = min(10, len(inputs))
     
-    print(f"Starting meta-training with {len(labeled_data)} labeled samples")
-    print(f"Batch size: {batch_size}, Number of tasks: {num_tasks}")
+    st.info(f"Starting meta-training with {len(labeled_data)} labeled samples")
+    st.info(f"Batch size: {batch_size}, Number of tasks: {num_tasks}")
+    
+    # Progress bar for training
+    progress_bar = st.progress(0)
     
     # Main training loop
     for epoch in range(epochs):
         meta_model.train()
         meta_losses = []
+        
+        # Update progress bar
+        progress_bar.progress((epoch + 1) / epochs)
         
         # Decay inner learning rate with a smoother curve for material properties
         current_inner_lr = max(inner_lr * (inner_lr_decay ** (epoch / 10)), min_inner_lr)
@@ -488,8 +496,8 @@ def meta_train(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list[st
         
         # Print progress every 10 epochs
         if epoch % 10 == 0 or epoch == epochs - 1:
-            print(f"Epoch {epoch+1}/{epochs} - Meta Loss: {avg_meta_loss:.4f}, Best Loss: {best_loss:.4f}")
-            print(f"Inner LR: {current_inner_lr:.6f}, Outer LR: {optimizer.param_groups[0]['lr']:.6f}")
+            st.info(f"Epoch {epoch+1}/{epochs} - Meta Loss: {avg_meta_loss:.4f}, Best Loss: {best_loss:.4f}")
+            st.info(f"Inner LR: {current_inner_lr:.6f}, Outer LR: {optimizer.param_groups[0]['lr']:.6f}")
         
         # Dynamic patience based on dataset size and epoch
         if len(labeled_data) < 20:
@@ -499,13 +507,13 @@ def meta_train(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list[st
         
         # Check for early stopping
         if patience_counter >= dynamic_patience:
-            print(f"🛑 Early stopping at epoch {epoch+1} due to {dynamic_patience} non-improving epochs.")
+            st.warning(f"🛑 Early stopping at epoch {epoch+1} due to {dynamic_patience} non-improving epochs.")
             break
     
     # Restore best model weights
     if best_model_state:
         meta_model.load_state_dict(best_model_state)
-        print(f"✅ Restored best model with loss: {best_loss:.4f}")
+        st.success(f"✅ Restored best model with loss: {best_loss:.4f}")
     
     # Final evaluation on all labeled data
     meta_model.eval()
@@ -513,7 +521,7 @@ def meta_train(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list[st
         all_predictions = meta_model(inputs)
         final_loss = loss_function(all_predictions, targets).item()
     
-    print(f"Final evaluation loss on all labeled data: {final_loss:.4f}")
+    st.success(f"Final evaluation loss on all labeled data: {final_loss:.4f}")
 
     meta_model.is_trained = True
     meta_model.scaler_x = scaler_inputs
@@ -555,10 +563,10 @@ def evaluate_maml(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list
     labeled_data = data.dropna(subset=target_columns)
 
     if unlabeled_data.empty:
-        print("No unlabeled samples available for evaluation.")
+        st.warning("No unlabeled samples available for evaluation.")
         return None
 
-    print(f"Evaluating with {len(labeled_data)} labeled samples and {len(unlabeled_data)} unlabeled samples")
+    st.info(f"Evaluating with {len(labeled_data)} labeled samples and {len(unlabeled_data)} unlabeled samples")
 
     # Set fallback strategy based on labeled data count
     use_fallback = len(labeled_data) < min_labeled_samples
@@ -566,7 +574,7 @@ def evaluate_maml(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list
     # Enhanced handling for very small datasets (tiling + noise)
     MINIMUM_DATA_POINTS = 8
     if len(labeled_data) > 0 and len(labeled_data) < MINIMUM_DATA_POINTS and not use_fallback:
-        print(f"🔄 Few labeled samples ({len(labeled_data)}). Applying data tiling for robust evaluation.")
+        st.warning(f"🔄 Few labeled samples ({len(labeled_data)}). Applying data tiling for robust evaluation.")
         tile_factor = int(np.ceil(MINIMUM_DATA_POINTS / len(labeled_data)))
         labeled_data_eval = pd.concat([labeled_data] * tile_factor, ignore_index=True)
 
@@ -583,13 +591,13 @@ def evaluate_maml(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list
                 noise = np.random.normal(0, max(std * 0.02, 1e-6), size=len(labeled_data_eval))
                 labeled_data_eval[col] += noise
 
-        print(f"✅ Data tiled from {len(labeled_data)} to {len(labeled_data_eval)} samples.")
+        st.info(f"✅ Data tiled from {len(labeled_data)} to {len(labeled_data_eval)} samples.")
     else:
         labeled_data_eval = labeled_data
 
     # Prediction using fallback GP or meta-model
     if use_fallback:
-        print(f"Using Gaussian Process fallback strategy due to limited data ({len(labeled_data)} samples)")
+        st.warning(f"Using Gaussian Process fallback strategy due to limited data ({len(labeled_data)} samples)")
         result_df = unlabeled_data.copy()
         all_predictions = np.zeros((len(unlabeled_data), len(target_columns)))
         all_uncertainties = np.zeros((len(unlabeled_data), len(target_columns)))
@@ -613,7 +621,7 @@ def evaluate_maml(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list
 
         uncertainty_scores = np.mean(all_uncertainties, axis=1).reshape(-1, 1)
     else:
-        print("Using meta-trained model for predictions")
+        st.info("Using meta-trained model for predictions")
         scaler_inputs = RobustScaler().fit(labeled_data[input_columns])
         scaler_targets = RobustScaler().fit(labeled_data[target_columns])
         inputs_infer = scaler_inputs.transform(unlabeled_data[input_columns])
@@ -647,7 +655,7 @@ def evaluate_maml(meta_model: MAMLModel, data: pd.DataFrame, input_columns: list
 
     if acquisition is None:
         acquisition = select_acquisition_function(curiosity, len(labeled_data))
-    print(f"Using SLAMD-style acquisition function: {acquisition}")
+    st.info(f"Using SLAMD-style acquisition function: {acquisition}")
 
     weights = np.clip(np.array(weights) + np.random.uniform(0.01, 0.1, size=len(weights)), 0.1, 1.0)
     if max_or_min is None or not isinstance(max_or_min, list):

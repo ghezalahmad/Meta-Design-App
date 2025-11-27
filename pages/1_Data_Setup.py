@@ -194,14 +194,5 @@ if data is not None:
                 direction = c1.radio("Optimize for:", ["Maximize", "Minimize"], key=f"opt_{col_name}", horizontal=True, index=["Maximize", "Minimize"].index(st.session_state.optimization_params[col_name]["direction"]))
                 weight = c2.number_input("Weight:", value=st.session_state.optimization_params[col_name]["weight"], step=0.1, min_value=0.1, key=f"weight_{col_name}")
                 st.session_state.optimization_params[col_name] = {"direction": direction, "weight": weight}
-
-    # --- Navigation Button ---
-    if input_columns and target_columns:
-        st.markdown("---")
-        if st.button("Next: Configure Experiment →", type="primary"):
-            st.switch_page("pages/2_Experimentation.py")
-    else:
-        st.warning("Please select at least one Input Feature and one Target Property to proceed.")
-
 else:
     st.info("Please upload or generate a dataset to begin configuration.")
