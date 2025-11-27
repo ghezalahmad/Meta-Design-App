@@ -1,0 +1,15 @@
+numpy
+pandas
+torch
+streamlit
+scikit-learn
+scipy
+plotly
+scikit-optimize
+seaborn
+openai
+streamlit-aggrid
+pytest
+pytest-cov
+playwright
+lolopy
